@@ -36,6 +36,17 @@ DB.version(2).stores({
   });
 });
 
+// v3: 导入撤销点（存在应用自己的数据库里，不写手机文件系统）
+DB.version(3).stores({
+  recipes: '++id, name, category, createdAt, updatedAt, deletedAt',
+  versions: '++id, recipeId, versionNumber, createdAt',
+  cookRecords: '++id, recipeId, versionId, date',
+  categories: '++id, name, sortOrder',
+  cookwares: '++id, name, type, sortOrder',
+  actions: '++id, name, sortOrder',
+  snapshots: '++id, createdAt'
+});
+
 // 读取时自动把图片 ArrayBuffer 转成 Blob（UI 层无感知）
 DB.recipes.hook('reading', recipe => decodeRecipeImages(recipe));
 
@@ -76,7 +87,86 @@ const DEFAULT_COOKWARES = [
 ];
 
 const DEFAULT_HEAT_LEVELS = ['小火', '中小火', '中火', '中大火', '大火'];
-const DEFAULT_ACTIONS = ['清洗', '切', '腌制', '焯水', '煎', '炸', '炒', '炖', '煮', '蒸', '烤', '调味', '收汁', '装盘'];
+const DEFAULT_ACTIONS = ['清洗', '切', '浸泡', '腌制', '焯水', '煎', '炸', '炒', '焖', '炖', '煮', '蒸', '烤', '调味', '收汁'];
+
+// ============================================
+// 步骤参数规则
+// 每一步显示哪些参数 = 动作允许的 ∩ 厨具提供的；没选厨具就只看动作。
+// 规则都可以在「动作管理 / 厨具管理」里改。
+// ============================================
+const STEP_PARAMS = ['heat', 'duration', 'temperature'];
+const PARAM_LABELS = { heat: '火候', duration: '时长', temperature: '温度' };
+
+// 动作默认支持哪些参数
+const ACTION_PARAM_DEFAULTS = {
+  '清洗': [],
+  '切': [],
+  '浸泡': ['duration'],
+  '腌制': ['duration'],
+  '焯水': ['duration'],
+  '调味': ['duration'],
+  '收汁': ['duration'],
+  '炒': ['heat', 'duration'],
+  '煎': ['heat', 'duration'],
+  // 炸：油锅看火候、空气炸锅看温度，两个都留着
+  '炸': ['heat', 'temperature', 'duration'],
+  '焖': ['heat', 'duration'],
+  '炖': ['heat', 'duration'],
+  '煮': ['heat', 'duration'],
+  '蒸': ['heat', 'duration'],
+  '烤': ['temperature', 'duration']
+};
+
+// 厨具默认能提供哪些参数
+const COOKWARE_PARAM_DEFAULTS = {
+  '空气炸锅': ['temperature', 'duration'],
+  '烤箱': ['temperature', 'duration'],
+  '微波炉': ['temperature', 'duration'],
+  '电饭煲': ['duration']
+};
+
+// 表里没写到的（自己新加的动作/厨具）先给一个宽松的默认值，之后可以在管理页里改
+const DEFAULT_ACTION_PARAMS = ['heat', 'duration', 'temperature'];
+const DEFAULT_COOKWARE_PARAMS = ['heat', 'duration'];
+
+function defaultParamsFor(type, name) {
+  const key = String(name || '').trim();
+  if (type === 'cookware') {
+    const hit = COOKWARE_PARAM_DEFAULTS[key];
+    return hit ? hit.slice() : DEFAULT_COOKWARE_PARAMS.slice();
+  }
+  const hit = ACTION_PARAM_DEFAULTS[key];
+  return hit ? hit.slice() : DEFAULT_ACTION_PARAMS.slice();
+}
+
+/** 按固定顺序整理参数，避免勾选顺序不同导致比较出差异 */
+function normalizeParams(list) {
+  return STEP_PARAMS.filter(p => (list || []).includes(p));
+}
+
+function actionParamsOf(name) {
+  const row = (typeof App !== 'undefined' ? App.actions : []).find(a => a.name === name);
+  return normalizeParams(row && row.params ? row.params : defaultParamsFor('action', name));
+}
+
+function cookwareParamsOf(name) {
+  const row = (typeof App !== 'undefined' ? App.cookwares : []).find(c => c.name === name);
+  return normalizeParams(row && row.params ? row.params : defaultParamsFor('cookware', name));
+}
+
+/** 这一步该显示哪些参数 */
+function stepParamsFor(actionName, cookwareName) {
+  if (!actionName) return []; // 还没选动作，先不显示参数
+  const allowed = actionParamsOf(actionName);
+  if (!cookwareName) return allowed;
+  return allowed.filter(p => cookwareParamsOf(cookwareName).includes(p));
+}
+
+/** 详情页展示用：只展示规则允许、并且用户填了值的那几项 */
+function stepDisplayParams(step) {
+  if (!step) return [];
+  return stepParamsFor(step.action, step.cookware).filter(p => step[p]);
+}
 
 // ============================================
 // 初始化数据库
@@ -91,6 +181,44 @@ async function initDB() {
   if (await DB.actions.count() === 0) {
     await DB.actions.bulkAdd(DEFAULT_ACTIONS.map((name, i) => ({ name, sortOrder: i + 1 })));
   }
+}
+
+/**
+ * 动作表的一次性升级：加入「浸泡」「焖」，去掉「装盘」，并整理成内置顺序。
+ * 「装盘」如果还有菜谱在用就先留着，免得步骤里的动作被清掉
+ * （和"动作管理里删不掉正在使用的动作"是同一个道理）。
+ */
+async function migrateActionList() {
+  const added = [];
+  for (const name of ['浸泡', '焖']) {
+    if (!(await DB.actions.where('name').equals(name).first())) {
+      await DB.actions.add({ name, params: defaultParamsFor('action', name), sortOrder: 9999 });
+      added.push(name);
+    }
+  }
+
+  const removed = [];
+  const plate = await DB.actions.where('name').equals('装盘').first();
+  if (plate) {
+    const recipes = await DB.recipes.toArray();
+    const used = recipes.some(r => (r.steps || []).some(s => s.action === '装盘'));
+    if (!used) {
+      await DB.actions.delete(plate.id);
+      removed.push('装盘');
+    }
+  }
+
+  // 按内置顺序排好；用户自己加的动作保持原有先后、排在后面
+  const now = await DB.actions.toArray();
+  const canonical = DEFAULT_ACTIONS.filter(n => now.some(a => a.name === n));
+  const others = now
+    .filter(a => !DEFAULT_ACTIONS.includes(a.name))
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+    .map(a => a.name);
+  const order = [...canonical, ...others];
+  await Promise.all(now.map(a => DB.actions.update(a.id, { sortOrder: order.indexOf(a.name) + 1 })));
+
+  return { added, removed };
 }
 
 /**
@@ -242,10 +370,10 @@ async function searchRecipes(query) {
 // 版本管理
 // ============================================
 async function getVersions(recipeId) {
-  return await DB.versions
-    .where('recipeId').equals(recipeId)
-    .reverse()
-    .sortBy('versionNumber');
+  // 固定按「旧 → 新」返回：最后一项就是当前版本
+  // （不能依赖 Dexie 的 reverse()，它只影响迭代顺序，语义容易被误读）
+  const list = await DB.versions.where('recipeId').equals(recipeId).toArray();
+  return list.sort((a, b) => (a.versionNumber - b.versionNumber) || (a.id - b.id));
 }
 
 async function getVersion(id) {
@@ -292,6 +420,15 @@ async function getCookRecord(id) {
   return await DB.cookRecords.get(id);
 }
 
+/** 撤销删除：把做菜记录按原样写回去（保持原来的 id） */
+async function restoreCookRecord(record) {
+  if (!record) return;
+  const { id, ...rest } = record;
+  if (id != null) await DB.cookRecords.add({ ...rest, id });
+  else await DB.cookRecords.add(rest);
+  await refreshRecipeStats(record.recipeId);
+}
+
 async function updateCookRecord(id, data) {
   const before = await DB.cookRecords.get(id);
   await DB.cookRecords.update(id, data);
@@ -328,7 +465,7 @@ async function getHomeStats() {
     return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
   }).length;
   const avgRating = averageRatingOf(recipes, records);
-  const frequent = [...recipes].sort((a, b) => (b.totalCookCount || 0) - (a.totalCookCount || 0)).filter(r => r.totalCookCount > 0).slice(0, 5);
+  const frequent = [...recipes].sort((a, b) => (b.totalCookCount || 0) - (a.totalCookCount || 0)).filter(r => r.totalCookCount > 0).slice(0, 6);
   const topRated = [...recipes].filter(r => (r.averageRating || 0) > 0).sort((a, b) => (b.averageRating || 0) - (a.averageRating || 0)).slice(0, 5);
   const topRating = topRated.length ? topRated[0].averageRating : 0;
   return { recipeCount: recipes.length, monthCount, avgRating, topRating, frequent, topRated };
@@ -479,8 +616,13 @@ async function getCategories() {
 }
 
 async function addCategory(name, icon) {
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('分类名称不能为空');
+  if (await DB.categories.where('name').equals(clean).first()) {
+    throw new Error(`已经有叫「${clean}」的分类了`);
+  }
   const cats = await DB.categories.toArray();
-  return await DB.categories.add({ name, icon: icon || '', sortOrder: cats.length + 1 });
+  return await DB.categories.add({ name: clean, icon: icon || '', sortOrder: cats.length + 1 });
 }
 
 async function deleteCategory(id) {
@@ -512,12 +654,33 @@ async function renameCategory(id, newName) {
 }
 
 async function getCookwares() {
-  return await DB.cookwares.orderBy('sortOrder').toArray();
+  const list = await DB.cookwares.orderBy('sortOrder').toArray();
+  // 老数据没有 params 字段，按内置规则补齐（不改库，管理页改过才写回）
+  return list.map(c => ({ ...c, params: normalizeParams(c.params || defaultParamsFor('cookware', c.name)) }));
+}
+
+/** 勾选/取消某个厨具能提供的参数 */
+async function toggleCookwareParam(id, param) {
+  const cw = await DB.cookwares.get(id);
+  if (!cw) return;
+  const current = normalizeParams(cw.params || defaultParamsFor('cookware', cw.name));
+  const next = current.includes(param) ? current.filter(p => p !== param) : [...current, param];
+  await DB.cookwares.update(id, { params: normalizeParams(next) });
 }
 
 async function addCookware(name, type) {
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('厨具名称不能为空');
+  if (await DB.cookwares.where('name').equals(clean).first()) {
+    throw new Error(`已经有叫「${clean}」的厨具了`);
+  }
   const list = await DB.cookwares.toArray();
-  return await DB.cookwares.add({ name, type: type || '锅具', sortOrder: list.length + 1 });
+  return await DB.cookwares.add({
+    name: clean,
+    type: type || '锅具',
+    params: defaultParamsFor('cookware', clean),
+    sortOrder: list.length + 1
+  });
 }
 
 async function deleteCookware(id) {
@@ -550,12 +713,31 @@ async function renameCookware(id, newName) {
 }
 
 async function getActions() {
-  return await DB.actions.orderBy('sortOrder').toArray();
+  const list = await DB.actions.orderBy('sortOrder').toArray();
+  return list.map(a => ({ ...a, params: normalizeParams(a.params || defaultParamsFor('action', a.name)) }));
+}
+
+/** 勾选/取消某个动作可以填的参数 */
+async function toggleActionParam(id, param) {
+  const action = await DB.actions.get(id);
+  if (!action) return;
+  const current = normalizeParams(action.params || defaultParamsFor('action', action.name));
+  const next = current.includes(param) ? current.filter(p => p !== param) : [...current, param];
+  await DB.actions.update(id, { params: normalizeParams(next) });
 }
 
 async function addAction(name) {
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('动作名称不能为空');
+  if (await DB.actions.where('name').equals(clean).first()) {
+    throw new Error(`已经有叫「${clean}」的动作了`);
+  }
   const list = await DB.actions.toArray();
-  return await DB.actions.add({ name, sortOrder: list.length + 1 });
+  return await DB.actions.add({
+    name: clean,
+    params: defaultParamsFor('action', clean),
+    sortOrder: list.length + 1
+  });
 }
 
 async function deleteAction(id) {
@@ -605,4 +787,56 @@ async function duplicateRecipe(id) {
     averageRating: 0,
     importedCookCount: 0
   });
+}
+
+// ============================================
+// 导入撤销点
+// 导入会整体改写数据，所以导入前留一份内部快照，出错可以一键撤销。
+// 快照只存在应用自己的数据库里，不接触手机文件系统，也不会产生下载。
+// ============================================
+const SNAPSHOT_TABLES = ['recipes', 'versions', 'cookRecords', 'categories', 'cookwares', 'actions'];
+
+async function createImportSnapshot() {
+  const data = {};
+  for (const name of SNAPSHOT_TABLES) {
+    data[name] = await DB[name].toArray();
+  }
+  // 读库时图片被转成了 Blob，快照要转回 ArrayBuffer，保证和正常存储格式一致
+  data.recipes = await Promise.all((data.recipes || []).map(r => encodeRecipeImages(r)));
+  await DB.snapshots.clear(); // 只保留最近一次导入的撤销点
+  const id = await DB.snapshots.add({ createdAt: new Date().toISOString(), data });
+  return id;
+}
+
+async function restoreImportSnapshot(id) {
+  const snapshot = await DB.snapshots.get(id);
+  if (!snapshot) throw new Error('撤销点已失效，请重新导入');
+  const tables = SNAPSHOT_TABLES.map(name => DB[name]);
+  await DB.transaction('rw', [...tables, DB.snapshots], async () => {
+    for (const name of SNAPSHOT_TABLES) {
+      await DB[name].clear();
+      const rows = snapshot.data[name] || [];
+      if (rows.length) await DB[name].bulkAdd(rows);
+    }
+    await DB.snapshots.delete(id);
+  });
+  await initDB();
+}
+
+async function discardImportSnapshot(id) {
+  if (!id) return;
+  try {
+    await DB.snapshots.delete(id);
+  } catch (e) {
+    // 清理失败不影响使用
+  }
+}
+
+/** 启动时清掉放太久的撤销点，避免长期占空间 */
+async function pruneImportSnapshots() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const all = await DB.snapshots.toArray();
+  const stale = all.filter(s => new Date(s.createdAt).getTime() < cutoff);
+  for (const s of stale) await DB.snapshots.delete(s.id);
+  return stale.length;
 }

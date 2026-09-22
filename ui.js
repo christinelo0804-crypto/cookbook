@@ -14,6 +14,15 @@ function esc(str) {
   return div.innerHTML;
 }
 
+/** 属性值转义：esc() 不会转义引号，放进 data-* 里会把属性截断 */
+function escAttr(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function formatDate(isoStr) {
   if (!isoStr) return '';
   const d = new Date(isoStr);
@@ -37,17 +46,407 @@ function friendlyDate(isoStr) {
   const d = new Date(isoStr);
   if (isNaN(d.getTime())) return isoStr || '';
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  return `${d.getMonth() + 1}月${d.getDate()}日 · ${days[d.getDay()]}`;
+  // 今年的日期省略年份，跨年时补上，避免"9月22日"分不清哪一年
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const datePart = sameYear
+    ? `${d.getMonth() + 1}月${d.getDate()}日`
+    : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${datePart} · ${days[d.getDay()]}`;
 }
 
-function showToast(msg) {
+/** 读屏播报用的常驻区域：toast 是临时元素，靠它才能被念出来 */
+function announceToScreenReader(msg) {
+  let live = document.getElementById('sr-live');
+  if (!live) {
+    live = document.createElement('div');
+    live.id = 'sr-live';
+    live.className = 'sr-only';
+    live.setAttribute('role', 'status');
+    live.setAttribute('aria-live', 'polite');
+    document.body.appendChild(live);
+  }
+  live.textContent = msg;
+}
+
+const TOAST_TONE_CLASS = {
+  info: '',
+  success: 'toast-success',
+  error: 'toast-error',
+  progress: 'toast-progress'
+};
+
+/**
+ * 轻提示。tone 用来区分四种情况：
+ *   success  操作成功（带对勾）
+ *   error    操作失败（红底，停留更久）
+ *   progress 正在进行（转圈，不会自动消失，通常会被随后的结果提示替换）
+ *   info     纯告知（默认）
+ * 文案越长停留越久，最长 6 秒。
+ */
+function showToast(msg, { tone = 'info', actionText = '', onAction = null, duration } = {}) {
   const existing = document.querySelector('.toast');
   if (existing) existing.remove();
   const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = msg;
+  el.className = ['toast', TOAST_TONE_CLASS[tone], actionText ? 'toast-action' : ''].filter(Boolean).join(' ');
+  el.innerHTML = `<span class="toast-text">${esc(msg)}</span>` +
+    (actionText ? `<button type="button" class="toast-btn">${esc(actionText)}</button>` : '');
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2200);
+  announceToScreenReader(msg);
+
+  let timer = null;
+  if (tone !== 'progress') {
+    const base = tone === 'error' ? 4200 : 2200;
+    const ms = duration != null ? duration : Math.min(base + Math.max(0, msg.length - 12) * 90, 6000);
+    timer = setTimeout(() => el.remove(), ms);
+  }
+
+  const btn = el.querySelector('.toast-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (timer) clearTimeout(timer);
+      el.remove();
+      if (onAction) onAction();
+    });
+  }
+  return {
+    close: () => {
+      if (timer) clearTimeout(timer);
+      el.remove();
+    }
+  };
+}
+
+/** 带操作按钮的 toast（例如「已移入回收站 · 撤销」） */
+function showActionToast(msg, { actionText = '撤销', onAction = null, duration = 5200, tone = 'success' } = {}) {
+  return showToast(msg, { tone, actionText, onAction, duration });
+}
+
+/**
+ * 统一的提示弹窗：用于"必须被看见"的结果或说明。
+ * rows 是 [标签, 数值] 数组；message / hint 允许传入已经安全的 HTML。
+ */
+function showInfoSheet({
+  title,
+  rows = [],
+  message = '',
+  hint = '',
+  confirmText = '知道了',
+  onConfirm = null,
+  secondaryText = '',
+  onSecondary = null,
+  danger = false,
+  dangerText = false
+}) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active center';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-title" style="margin-bottom:10px">${esc(title)}</div>
+      ${rows.length ? `<div class="card" style="margin-bottom:12px">
+        ${rows.map(([label, value]) => `<div class="ing-row"><span>${esc(label)}</span><span class="ing-amount">${esc(value)}</span></div>`).join('')}
+      </div>` : ''}
+      ${message ? `<div class="sheet-message${dangerText ? ' danger' : ''}">${message}</div>` : ''}
+      ${hint ? `<div class="form-hint" style="margin-top:10px">${hint}</div>` : ''}
+      <div style="display:flex;gap:10px;margin-top:20px">
+        ${secondaryText ? `<button class="btn btn-secondary" style="flex:1" data-action="info-secondary">${esc(secondaryText)}</button>` : ''}
+        <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" style="flex:1" data-action="info-confirm">${esc(confirmText)}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-action=info-confirm]').addEventListener('click', () => {
+    overlay.remove();
+    if (onConfirm) onConfirm();
+  });
+  const secondary = overlay.querySelector('[data-action=info-secondary]');
+  if (secondary) {
+    secondary.addEventListener('click', () => {
+      overlay.remove();
+      if (onSecondary) onSecondary();
+    });
+  }
+}
+
+/** 失败提示弹窗：说明原因 + 可选「重试」 */
+function showErrorSheet({ title = '操作没成功', message = '', hint = '', retryText = '', onRetry = null }) {
+  showInfoSheet({
+    title,
+    message,
+    hint,
+    dangerText: true,
+    confirmText: retryText || '知道了',
+    onConfirm: retryText ? onRetry : null,
+    secondaryText: retryText ? '关闭' : ''
+  });
+}
+
+/** 表单行内错误：在输入框下方显示红字提示，把光标移过去，改动后自动清除 */
+function showFieldError(input, message) {
+  if (!input) return;
+  clearFieldError(input);
+  input.classList.add('input-error');
+  const tip = document.createElement('div');
+  tip.className = 'field-error';
+  tip.textContent = message;
+  input.insertAdjacentElement('afterend', tip);
+  try {
+    input.focus();
+  } catch (e) {
+    // 个别浏览器聚焦失败不影响提示
+  }
+  const clear = () => clearFieldError(input);
+  input.addEventListener('input', clear, { once: true });
+  input.addEventListener('change', clear, { once: true });
+}
+
+function clearFieldError(input) {
+  if (!input) return;
+  input.classList.remove('input-error');
+  const next = input.nextElementSibling;
+  if (next && next.classList.contains('field-error')) next.remove();
+}
+
+/** 管理页（分类 / 厨具 / 动作）的错误处理：被菜谱占用时用弹窗说明，其余就近提示 */
+function handleManagerError(err, inlineInput) {
+  const msg = (err && err.message) ? err.message : '操作没有成功';
+  if (msg.includes('正在被')) {
+    showInfoSheet({
+      title: '这个还有菜谱在用',
+      message: msg,
+      hint: '先在那些菜谱里把它换掉或去掉，然后再回来删除。',
+      confirmText: '知道了'
+    });
+    return;
+  }
+  if (inlineInput) showFieldError(inlineInput, msg);
+  else showToast(msg, { tone: 'error' });
+}
+
+// ============================================
+// 自定义下拉：外观跟输入框一致，点开是应用内的选择弹窗
+// （不用浏览器原生的 select 样式）
+// ============================================
+
+/** options: [{ value, label }] */
+function selectButtonHtml({ id = '', className = '', title = '', placeholder = '请选择', options = [], value = '', disabled = false, style = '' }) {
+  const hit = options.find(o => String(o.value) === String(value));
+  return `<button type="button"${id ? ` id="${escAttr(id)}"` : ''} class="select-btn${hit ? '' : ' placeholder'}${className ? ` ${className}` : ''}"${disabled ? ' disabled' : ''}
+    data-action="open-option-picker"
+    aria-haspopup="listbox"
+    aria-expanded="false"
+    data-title="${escAttr(title)}"
+    data-placeholder="${escAttr(placeholder)}"
+    data-options="${escAttr(JSON.stringify(options))}"
+    value="${escAttr(String(value == null ? '' : value))}"${style ? ` style="${style}"` : ''}>
+    <span class="select-btn-value">${esc(hit ? hit.label : placeholder)}</span>
+    <span class="select-btn-arrow">${SVG.chevDown}</span>
+  </button>`;
+}
+
+/** 更新一个自定义下拉的选项与当前值（不触发 change 事件） */
+function updateSelectButton(el, { options, value, placeholder, disabled }) {
+  if (!el) return;
+  if (options) el.dataset.options = JSON.stringify(options);
+  if (placeholder != null) {
+    el.dataset.placeholder = placeholder;
+    const label = el.querySelector('.select-btn-value');
+    if (label && !value) label.textContent = placeholder;
+  }
+  if (disabled != null) el.disabled = disabled;
+  if (value != null) {
+    const list = JSON.parse(el.dataset.options || '[]');
+    const hit = list.find(o => String(o.value) === String(value));
+    el.value = value;
+    const label = el.querySelector('.select-btn-value');
+    if (label) label.textContent = hit ? hit.label : (el.dataset.placeholder || '');
+    el.classList.toggle('placeholder', !hit);
+  }
+}
+
+/** 选定之后：写回值、更新显示、并派发 change 让表单逻辑（标记已修改、重算参数）生效 */
+function setSelectButtonValue(el, value) {
+  updateSelectButton(el, { value });
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+const OPTION_SEARCH_MIN = 8; // 选项超过这个数量就带搜索框
+
+function openOptionPicker(trigger) {
+  const options = JSON.parse(trigger.dataset.options || '[]');
+  if (!options.length) return;
+  const current = trigger.value;
+  const searchable = options.length >= OPTION_SEARCH_MIN;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-sheet-body">
+        <div class="modal-handle"></div>
+        <div class="modal-title">${esc(trigger.dataset.title || '请选择')}</div>
+        ${searchable ? `<input class="input" id="option-search" placeholder="输入关键字查找" style="margin-bottom:10px">` : ''}
+        <div class="option-list" id="option-list" role="listbox" aria-label="${escAttr(trigger.dataset.title || '请选择')}">
+          ${options.map(o => `
+            <button type="button" role="option" aria-selected="${String(o.value) === String(current)}" class="option-item${String(o.value) === String(current) ? ' on' : ''}" data-value="${escAttr(String(o.value))}">
+              <span>${esc(o.label)}</span>${String(o.value) === String(current) ? SVG.check : ''}
+            </button>`).join('')}
+        </div>
+        <div class="form-hint" id="option-empty" style="display:none">没有匹配的选项</div>
+      </div>
+      <div class="modal-sheet-footer">
+        <button class="btn btn-secondary btn-block" id="option-cancel">取消</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  trigger.setAttribute('aria-expanded', 'true');
+  const closePicker = () => {
+    trigger.setAttribute('aria-expanded', 'false');
+    overlay.remove();
+  };
+  overlay.querySelector('#option-cancel').addEventListener('click', closePicker);
+
+  overlay.querySelectorAll('.option-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      trigger.setAttribute('aria-expanded', 'false');
+      setSelectButtonValue(trigger, btn.dataset.value);
+      overlay.remove();
+    });
+  });
+
+  const search = overlay.querySelector('#option-search');
+  if (search) {
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      overlay.querySelectorAll('.option-item').forEach(btn => {
+        const hit = !q || btn.textContent.trim().toLowerCase().includes(q);
+        btn.style.display = hit ? '' : 'none';
+        if (hit) shown += 1;
+      });
+      const empty = overlay.querySelector('#option-empty');
+      if (empty) empty.style.display = shown ? 'none' : '';
+    });
+  }
+}
+
+// ============================================
+// 自定义日期选择：今天 / 昨天 / 前天 + 月历
+// ============================================
+const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+
+function toIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function dateOffsetIso(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return toIsoDate(d);
+}
+
+/** 把 2026-09-22 显示成「今天 · 9月22日」「昨天 · 9月21日」「2025年12月3日 周三」 */
+function formatDateCn(iso) {
+  if (!iso) return '';
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const diff = Math.round((todayStart - d) / 86400000);
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  if (diff === 0) return `今天 · ${md}`;
+  if (diff === 1) return `昨天 · ${md}`;
+  if (diff === 2) return `前天 · ${md}`;
+  const y = d.getFullYear() === today.getFullYear() ? '' : `${d.getFullYear()}年`;
+  return `${y}${md} 周${WEEK_LABELS[d.getDay()]}`;
+}
+
+function dateButtonHtml({ id = '', value = '', title = '选择日期', className = '' }) {
+  return `<button type="button"${id ? ` id="${escAttr(id)}"` : ''} class="select-btn date-btn${className ? ` ${className}` : ''}"
+    data-action="open-date-picker" data-title="${escAttr(title)}" value="${escAttr(value)}">
+    <span class="select-btn-value">${esc(formatDateCn(value))}</span>
+    <span class="select-btn-arrow">${SVG.chevDown}</span>
+  </button>`;
+}
+
+function setDateButtonValue(trigger, iso) {
+  trigger.value = iso;
+  const label = trigger.querySelector('.select-btn-value');
+  if (label) label.textContent = formatDateCn(iso);
+  trigger.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function openDatePicker(trigger) {
+  const todayIso = toIsoDate(new Date());
+  const selected = /^\d{4}-\d{2}-\d{2}$/.test(trigger.value) ? trigger.value : todayIso;
+  let view = new Date(`${selected}T00:00:00`);
+  view = new Date(view.getFullYear(), view.getMonth(), 1);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-sheet-body">
+        <div class="modal-handle"></div>
+        <div class="modal-title">${esc(trigger.dataset.title || '选择日期')}</div>
+        <div class="chips-wrap" style="margin-bottom:14px">
+          ${[['今天', 0], ['昨天', 1], ['前天', 2]].map(([label, back]) =>
+            `<button type="button" class="chip date-quick${selected === dateOffsetIso(back) ? ' on' : ''}" data-back="${back}">${label}</button>`).join('')}
+        </div>
+        <div class="date-picker-head">
+          <button type="button" class="icon-btn" data-nav="-1" aria-label="上个月">${SVG.chevL}</button>
+          <span class="date-picker-label" id="date-picker-label"></span>
+          <button type="button" class="icon-btn" data-nav="1" aria-label="下个月">${SVG.chevR}</button>
+        </div>
+        <div class="date-picker-week">${WEEK_LABELS.map(w => `<span>${w}</span>`).join('')}</div>
+        <div class="date-picker-grid" id="date-picker-grid"></div>
+      </div>
+      <div class="modal-sheet-footer">
+        <button class="btn btn-secondary btn-block" id="date-cancel">取消</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  const paint = () => {
+    overlay.querySelector('#date-picker-label').textContent = `${view.getFullYear()} 年 ${view.getMonth() + 1} 月`;
+    const days = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+    const lead = new Date(view.getFullYear(), view.getMonth(), 1).getDay();
+    const cells = [];
+    for (let i = 0; i < lead; i += 1) cells.push('<span class="date-cell empty"></span>');
+    for (let d = 1; d <= days; d += 1) {
+      const iso = toIsoDate(new Date(view.getFullYear(), view.getMonth(), d));
+      const cls = ['date-cell'];
+      if (iso === selected) cls.push('on');
+      if (iso === todayIso) cls.push('today');
+      cells.push(`<button type="button" class="${cls.join(' ')}" data-day="${iso}">${d}</button>`);
+    }
+    overlay.querySelector('#date-picker-grid').innerHTML = cells.join('');
+    overlay.querySelectorAll('.date-cell[data-day]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        setDateButtonValue(trigger, btn.dataset.day);
+        close();
+      });
+    });
+  };
+  paint();
+
+  overlay.querySelectorAll('.date-quick').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setDateButtonValue(trigger, dateOffsetIso(Number(btn.dataset.back)));
+      close();
+    });
+  });
+  overlay.querySelectorAll('[data-nav]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      view = new Date(view.getFullYear(), view.getMonth() + Number(btn.dataset.nav), 1);
+      paint();
+    });
+  });
+  overlay.querySelector('#date-cancel').addEventListener('click', close);
 }
 
 // 内联 SVG 图标
@@ -79,6 +478,7 @@ const SVG = {
   ,
   chevUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>',
   chevDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  chevL: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
@@ -148,22 +548,13 @@ function sectionTitle(title) {
 }
 
 function confirmSheet({ title, message, confirmText = '确定', cancelText = '取消', onConfirm, danger = false }) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay active center';
-  overlay.innerHTML = `
-    <div class="modal-sheet">
-      <div class="modal-title" style="margin-bottom:10px">${esc(title)}</div>
-      <div style="font-size: 0.9375rem;line-height:1.6;color:var(--color-text)">${message}</div>
-      <div style="display:flex;gap:10px;margin-top:22px">
-        <button class="btn btn-secondary" style="flex:1" data-action="close-sheet">${esc(cancelText)}</button>
-        <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" style="flex:1" data-action="confirm-done">${esc(confirmText)}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  const done = () => {
-    overlay.remove();
-    if (onConfirm) onConfirm();
-  };
-  overlay.querySelector('[data-action="confirm-done"]').addEventListener('click', done);
+  // 和 showInfoSheet 是同一套弹窗，这里只保留"确认/取消"的调用习惯
+  showInfoSheet({
+    title,
+    message,
+    confirmText,
+    secondaryText: cancelText,
+    danger,
+    onConfirm
+  });
 }

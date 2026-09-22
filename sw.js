@@ -1,5 +1,5 @@
 // 网络优先：只要在线就总是拿最新文件，离线时才回退到缓存。
-const CACHE_NAME = 'my-family-cookbook-202609220501';
+const CACHE_NAME = 'my-family-cookbook-202609221445';
 // 全部使用相对路径，这样部署在子目录（如 example.com/cookbook/）也能正常工作
 const ASSETS = [
   './',

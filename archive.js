@@ -419,6 +419,8 @@ async function importArchiveMerge(parsed) {
           name: item.name,
           icon: item.icon || '',
           type: item.type,
+          // 参数规则要一起带过来，否则合并导入后厨具/动作会退回默认值
+          params: item.params,
           sortOrder: item.sortOrder
         });
       }

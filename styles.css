@@ -68,8 +68,10 @@
 
   /* 功能色 */
   --color-success: #3E8E5A;
+  --color-success-strong: #31724C;
   --color-warning: #F2A93B;
   --color-danger: #C94B3D;
+  --color-danger-strong: #B23A2C;
   --color-danger-soft: #FBE9E7;
   --color-star: #F2A93B;
   --color-star-empty: #E4DCD2;
@@ -96,7 +98,6 @@
   --btn-height: 54px;
   --input-height: 50px;
   --tab-height: 62px;
-  --header-height: 54px;
 
   /* 间距 */
   --sp-sm: 8px;
@@ -150,9 +151,20 @@ h2 { font-size: var(--text-xl); font-weight: 800; }
 h3 { font-size: var(--text-lg); font-weight: 800; }
 
 .page-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-2xl);
   font-weight: 800;
   color: var(--color-text);
+  letter-spacing: -0.01em;
+}
+
+/* 各主页面顶部标题行：字号与位置统一 */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 46px;
+  margin: 2px 0 14px;
 }
 
 .page-count {
@@ -185,39 +197,6 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
 .flex-between { display: flex; align-items: center; justify-content: space-between; }
 
 /* ============================================
-   顶部导航
-   ============================================ */
-.app-header {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--header-height);
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--sp-xl);
-  z-index: 100;
-  border-bottom: 1px solid var(--color-line-soft);
-}
-
-.app-header-title {
-  font-family: "Songti SC", "STSong", "Noto Serif SC", serif;
-  font-size: 1.375rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--color-text);
-}
-
-.app-header-actions {
-  display: flex;
-  gap: var(--sp-sm);
-}
-
-/* ============================================
    底部导航
    ============================================ */
 .bottom-tabs {
@@ -239,6 +218,7 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
 
 .tab-item {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -252,6 +232,54 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
   background: none;
   color: var(--color-text-tertiary);
   position: relative;
+}
+
+/* 底部导航中间的「新建菜谱」按钮 */
+.tab-action {
+  flex: 0 0 auto;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 64px;
+  height: 62px;
+  padding: 0;
+  margin: 0 4px;
+  border: none;
+  border-radius: 20px;
+  background: var(--color-accent-strong);
+  color: var(--color-on-solid);
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  /* 抬高一点，超出导航栏高度 */
+  transform: translateY(-14px);
+  box-shadow: 0 6px 16px var(--accent-a20), 0 2px 6px var(--shadow-tint);
+  transition: transform var(--duration-fast) var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tab-action:active {
+  transform: translateY(-14px) scale(0.95);
+}
+
+.tab-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-action-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.tab-action-label {
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
 }
 
 /* 选中态：色块覆盖图标和文字 */
@@ -298,8 +326,9 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
    ============================================ */
 .page {
   display: none;
-  padding-top: calc(var(--header-height) + env(safe-area-inset-top, 0));
-  padding-bottom: calc(var(--tab-height) + env(safe-area-inset-bottom, 0) + var(--sp-lg));
+  padding-top: calc(env(safe-area-inset-top, 0) + 6px);
+  /* 底部留白：导航栏高度 + 安全区 + 常规间距 + 中间悬浮按钮凸出的部分 */
+  padding-bottom: calc(var(--tab-height) + env(safe-area-inset-bottom, 0) + var(--sp-lg) + 16px);
   min-height: 100vh;
 }
 
@@ -645,7 +674,7 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
   letter-spacing: -0.01em;
 }
 
-.input, .select, textarea {
+.input, textarea {
   width: 100%;
   height: var(--input-height);
   padding: 0 14px;
@@ -665,7 +694,7 @@ h3 { font-size: var(--text-lg); font-weight: 800; }
   color: var(--color-text-tertiary);
 }
 
-.input:focus, .select:focus, textarea:focus {
+.input:focus, textarea:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 4px var(--color-accent-glow);
 }
@@ -681,12 +710,160 @@ textarea.input {
   line-height: 1.5;
 }
 
-.select {
-  background-color: var(--color-surface);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1.5 1.5l5.5 5.5 5.5-5.5' stroke='%238B837A' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 16px center;
-  padding-right: 42px;
+/* 自定义下拉：外观跟输入框一致，点开是应用内的选择弹窗 */
+.select-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: var(--input-height);
+  padding: 0 14px;
+  border: 1.5px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--text-base);
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.select-btn:active {
+  background: var(--color-surface-soft);
+}
+
+.select-btn:disabled {
+  color: var(--color-text-tertiary);
+  cursor: default;
+}
+
+.select-btn.placeholder .select-btn-value {
+  color: var(--color-text-tertiary);
+}
+
+.select-btn-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.select-btn-arrow {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.select-btn-arrow svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 选择弹窗里的选项列表 */
+.option-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 日期选择：今天/昨天/前天 + 月历 */
+.date-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.date-picker-label {
+  font-size: var(--text-base);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.date-picker-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.date-picker-week span {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+}
+
+.date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.date-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 42px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  font-family: inherit;
+  font-size: var(--text-base);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.date-cell.empty {
+  visibility: hidden;
+}
+
+.date-cell.today {
+  color: var(--color-accent-strong);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1.5px var(--color-accent-soft);
+}
+
+.date-cell.on {
+  background: var(--color-accent-strong);
+  color: var(--color-text-on-accent);
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.option-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 4px;
+  border: none;
+  border-bottom: 1px solid var(--color-line);
+  background: none;
+  font-family: inherit;
+  font-size: var(--text-base);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.option-item:last-child {
+  border-bottom: none;
+}
+
+.option-item.on {
+  color: var(--color-accent-deep);
+  font-weight: 700;
+}
+
+.option-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--color-accent-strong);
 }
 
 input[type="date"] {
@@ -740,6 +917,14 @@ input[type="date"] {
   -webkit-tap-highlight-color: transparent;
   transition: all var(--duration-fast) var(--ease-out);
   font-family: inherit;
+}
+
+/* 管理页里的小号 chip（勾选参数用） */
+.chip-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: var(--text-sm);
+  font-weight: 700;
 }
 
 .chip:active {
@@ -838,6 +1023,8 @@ input[type="date"] {
   box-shadow: var(--shadow-md);
   transition: transform var(--duration-fast) var(--ease-out);
   -webkit-tap-highlight-color: transparent;
+  /* 同上：避免长菜名撑宽网格 */
+  min-width: 0;
 }
 
 .grid-card:active {
@@ -1085,6 +1272,8 @@ input[type="date"] {
   gap: 3px;
   text-align: center;
   padding: 0 4px;
+  /* 网格项默认 min-width:auto，超长菜名会把列撑宽、导致整页横向溢出 */
+  min-width: 0;
 }
 
 .stats-card .stat + .stat {
@@ -1103,6 +1292,11 @@ input[type="date"] {
   font-size: 0.7812rem;
   color: var(--color-text-secondary);
   line-height: 1.35;
+  /* 保持单行，避免某一格换行导致三个页面的统计卡高度不一致 */
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 
@@ -1129,6 +1323,8 @@ input[type="date"] {
   font-family: inherit;
   box-shadow: var(--shadow-md);
   -webkit-tap-highlight-color: transparent;
+  /* 网格项默认 min-width:auto，长菜名会把列撑宽、导致整页横向溢出 */
+  min-width: 0;
 }
 
 .freq-card-name {
@@ -1406,6 +1602,45 @@ input[type="date"] {
   font-weight: 600;
 }
 
+/* 首次使用引导里的三步：标题和说明各占一行，避免两列挤在一起折行 */
+.welcome-step {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--color-line);
+}
+
+.welcome-step:last-child {
+  border-bottom: none;
+}
+
+.welcome-step-no {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-deep);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.welcome-step-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.welcome-step-desc {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
 .tag-line {
   display: flex;
   flex-wrap: wrap;
@@ -1479,6 +1714,19 @@ input[type="date"] {
   font-size: 0.7812rem;
   font-weight: 700;
   color: var(--color-accent-deep);
+}
+
+/* 步骤里用的厨具单独一个颜色，和火候/时长区分开 */
+.step-params span.cw {
+  background: var(--accent-a06);
+  border: 1px solid var(--color-accent-soft);
+}
+
+/* 步骤处理的食材：中性色，和厨具、参数区分开 */
+.step-params span.ing {
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-line-strong);
+  color: var(--color-text-secondary);
 }
 
 .step-note {
@@ -1591,28 +1839,6 @@ input[type="date"] {
 
 .action-bar .btn-secondary {
   flex: 0 0 118px;
-}
-
-/* 首页底部固定新建按钮（悬浮在 Tab 栏上方） */
-.action-bar.home-bar {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(var(--tab-height) + env(safe-area-inset-bottom, 0) + 10px);
-  width: 100%;
-  max-width: 600px;
-  border: none;
-  background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  margin: 0;
-  padding: 0 16px;
-  z-index: 50;
-}
-
-/* 首页内容底部留白，避免被固定按钮遮住 */
-#page-home .page-content {
-  padding-bottom: 104px;
 }
 
 .menu-value.warn {
@@ -1740,6 +1966,126 @@ input[type="date"] {
 /* 筛选弹窗分组 */
 .filter-group {
   margin-bottom: 18px;
+}
+
+/* 可搜索选择器（如记录页的「按菜谱筛选」） */
+.picker-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 52px;
+  margin-top: 14px;
+  padding: 0 14px;
+  border: 1.5px solid var(--color-line-strong);
+  border-radius: 16px;
+  background: var(--color-surface);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--duration-fast), background var(--duration-fast);
+}
+
+.picker-entry:active {
+  background: var(--color-surface-soft);
+}
+
+.picker-entry-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--color-accent-strong);
+}
+
+.picker-entry-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.picker-entry-label {
+  flex-shrink: 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.picker-entry-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--color-text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-entry-arrow {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.picker-entry-arrow svg {
+  width: 16px;
+  height: 16px;
+}
+
+.picker-entry.active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.picker-entry.active .picker-entry-icon,
+.picker-entry.active .picker-entry-label,
+.picker-entry.active .picker-entry-value {
+  color: var(--color-accent-deep);
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 4px;
+  border: none;
+  border-bottom: 1px solid var(--color-line);
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.picker-row:last-child {
+  border-bottom: none;
+}
+
+.picker-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.picker-count {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-row.on .picker-name {
+  color: var(--color-accent-strong);
+  font-weight: 800;
+}
+
+.picker-row.on .picker-icon {
+  color: var(--color-accent-strong);
 }
 
 .filter-label {
@@ -2216,14 +2562,12 @@ input[type="date"] {
 }
 
 .modal-sheet-footer {
+  display: flex;
+  gap: 10px;
   padding: 12px 20px calc(16px + env(safe-area-inset-bottom, 0));
   border-top: 1px solid var(--color-line-soft);
   background: var(--color-surface);
   flex-shrink: 0;
-}
-
-.modal-sheet-footer .btn + .btn {
-  margin-left: 10px;
 }
 
 .modal-handle {
@@ -2272,9 +2616,12 @@ input[type="date"] {
    ============================================ */
 .toast {
   position: fixed;
-  top: calc(var(--header-height) + env(safe-area-inset-top, 0) + 14px);
+  top: calc(env(safe-area-inset-top, 0) + 14px);
   left: 50%;
   transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   background: var(--dark-surface);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -2286,11 +2633,114 @@ input[type="date"] {
   z-index: 300;
   animation: toastIn var(--duration-normal) var(--ease-out);
   pointer-events: none;
-  white-space: nowrap;
   box-shadow: 0 4px 20px var(--shadow-toast);
   max-width: 86vw;
+}
+
+/* 成功：加一个对勾，不靠颜色也能区分 */
+.toast-success::before {
+  content: '';
+  flex-shrink: 0;
+  width: 10px;
+  height: 6px;
+  margin-right: 2px;
+  border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+/* 失败：红底 */
+.toast-error {
+  background: var(--color-danger-strong);
+}
+
+/* 进行中：转圈，不自动消失 */
+.toast-progress::before {
+  content: '';
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--on-dark-fill);
+  border-top-color: var(--color-on-solid);
+  animation: toastSpin 0.8s linear infinite;
+}
+
+@keyframes toastSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* 带操作按钮的 toast：放宽换行限制，按钮可点 */
+.toast-action {
+  padding: 8px 8px 8px 20px;
+  pointer-events: auto;
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-action .toast-text {
+  white-space: normal;
+}
+
+.toast-btn {
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.toast-btn:active {
+  opacity: 0.85;
+}
+
+/* 弹窗正文（结果 / 错误说明） */
+.sheet-message {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+
+.sheet-message.danger {
+  color: var(--color-danger);
+}
+
+/* 表单行内错误 */
+.field-error {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-danger);
+}
+
+.input-error {
+  border-color: var(--color-danger) !important;
+}
+
+/* 只给读屏软件看的文字 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @keyframes toastIn {
@@ -2416,9 +2866,6 @@ input[type="date"] {
     padding: 20px 24px 36px;
   }
 
-  .freq-grid {
-    grid-template-columns: repeat(5, 1fr);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2430,15 +2877,11 @@ input[type="date"] {
 
 /* Safari safe area */
 @supports (padding-top: env(safe-area-inset-top)) {
-  .app-header {
-    padding-top: env(safe-area-inset-top);
-    height: calc(var(--header-height) + env(safe-area-inset-top));
-  }
   .page {
-    padding-top: calc(var(--header-height) + env(safe-area-inset-top));
+    padding-top: calc(env(safe-area-inset-top) + 6px);
   }
   .toast {
-    top: calc(var(--header-height) + env(safe-area-inset-top) + 14px);
+    top: calc(env(safe-area-inset-top) + 14px);
   }
 }
 

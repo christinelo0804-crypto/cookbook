@@ -3,8 +3,8 @@
 本目录由 `node scripts/build-deploy.mjs` 生成，**不要直接在这里改代码**；
 改动请回到项目根目录修改，然后重新生成。
 
-构建时间：2026/9/22 13:01:14
-Service Worker 缓存名：`my-family-cookbook-202609220501`
+构建时间：2026/9/22 22:45:42
+Service Worker 缓存名：`my-family-cookbook-202609221445`
 
 ## 一、部署方式（三选一）
 

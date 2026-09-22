@@ -25,6 +25,29 @@ function showManager(title, listHtml, addRowHtml, onAdd) {
   overlay.querySelector('#manager-add').querySelector('button[data-action="manager-add"]').addEventListener('click', onAdd);
 }
 
+/** 厨具 / 动作每一行下面的「这个能用哪些参数」开关 */
+function paramChipsHtml(type, id, params) {
+  const on = params || [];
+  return `<div class="chips-wrap" style="margin-top:8px">
+    ${STEP_PARAMS.map(p => `<button type="button" class="chip chip-sm${on.includes(p) ? ' on' : ''}" data-action="manager-param" data-type="${type}" data-id="${id}" data-param="${p}">${PARAM_LABELS[p]}</button>`).join('')}
+  </div>`;
+}
+
+/** 管理页一行：名字 + 改名/删除按钮 +（可选）参数开关 */
+function managerRowHtml({ type, id, title, note = '', params = null }) {
+  return `
+    <div style="padding:12px 0;border-bottom:1px solid var(--color-line)">
+      <div class="flex-between">
+        <span style="font-size: 1rem">${title}${note}</span>
+        <div class="row-actions">
+          <button class="icon-btn" style="width:32px;height:32px;border-radius:10px" data-action="manager-rename" data-id="${id}" data-type="${type}" aria-label="改名">${SVG.pencil}</button>
+          <button class="icon-btn danger" style="width:32px;height:32px;border-radius:10px" data-action="manager-del" data-id="${id}" data-type="${type}" aria-label="删除">${SVG.trash}</button>
+        </div>
+      </div>
+      ${params ? paramChipsHtml(type, id, params) : ''}
+    </div>`;
+}
+
 async function showCategoryManager() {
   const cats = await getCategories();
   showManager(
@@ -40,10 +63,16 @@ async function showCategoryManager() {
     `<input class="input" id="manager-name" placeholder="新分类名称" style="flex:1;height:44px">
      <button class="btn btn-primary btn-sm" data-action="manager-add">添加</button>`,
     async () => {
-      const name = document.getElementById('manager-name')?.value?.trim();
-      if (!name) { showToast('请输入分类名称'); return; }
-      await addCategory(name, '');
-      showToast('分类已添加');
+      const input = document.getElementById('manager-name');
+      const name = input?.value?.trim();
+      if (!name) { showFieldError(input, '请先填分类名称'); return; }
+      try {
+        await addCategory(name, '');
+      } catch (err) {
+        showFieldError(input, err.message);
+        return;
+      }
+      showToast('分类已添加', { tone: 'success' });
       closeSheet();
       renderProfile();
     }
@@ -54,25 +83,35 @@ async function showCookwareManager() {
   const list = await getCookwares();
   showManager(
     '厨具管理',
-    list.map(c => `
-      <div class="flex-between" style="padding:12px 0;border-bottom:1px solid var(--color-line)">
-        <span style="font-size: 1rem">${esc(c.name)} <span class="text-tertiary" style="font-size: 0.8125rem">(${esc(c.type)})</span></span>
-        <div class="row-actions">
-          <button class="icon-btn" style="width:32px;height:32px;border-radius:10px" data-action="manager-rename" data-id="${c.id}" data-type="cookware" aria-label="给这个厨具改名">${SVG.pencil}</button>
-          <button class="icon-btn danger" style="width:32px;height:32px;border-radius:10px" data-action="manager-del" data-id="${c.id}" data-type="cookware" aria-label="删除这个厨具">${SVG.trash}</button>
-        </div>
-      </div>`).join(''),
+    list.map(c => managerRowHtml({
+      type: 'cookware',
+      id: c.id,
+      title: esc(c.name),
+      note: ` <span class="text-tertiary" style="font-size: 0.8125rem">(${esc(c.type)})</span>`,
+      params: c.params
+    })).join(''),
     `<input class="input" id="manager-name" placeholder="厨具名称" style="flex:1;height:44px">
-     <select class="select" id="manager-type" style="width:92px;height:44px;font-size: 0.875rem">
-       <option>锅具</option><option>电器</option><option>灶具</option>
-     </select>
+     ${selectButtonHtml({
+       id: 'manager-type',
+       title: '厨具类型',
+       placeholder: '锅具',
+       options: [{ value: '锅具', label: '锅具' }, { value: '电器', label: '电器' }, { value: '灶具', label: '灶具' }],
+       value: '锅具',
+       style: 'width:92px;height:44px;font-size:0.875rem;padding:0 10px'
+     })}
      <button class="btn btn-primary btn-sm" data-action="manager-add">添加</button>`,
     async () => {
-      const name = document.getElementById('manager-name')?.value?.trim();
+      const input = document.getElementById('manager-name');
+      const name = input?.value?.trim();
       const type = document.getElementById('manager-type')?.value || '锅具';
-      if (!name) { showToast('请输入厨具名称'); return; }
-      await addCookware(name, type);
-      showToast('厨具已添加');
+      if (!name) { showFieldError(input, '请先填厨具名称'); return; }
+      try {
+        await addCookware(name, type);
+      } catch (err) {
+        showFieldError(input, err.message);
+        return;
+      }
+      showToast('厨具已添加', { tone: 'success' });
       closeSheet();
       renderProfile();
     }
@@ -83,21 +122,25 @@ async function showActionManager() {
   const list = await getActions();
   showManager(
     '动作管理',
-    list.map(a => `
-      <div class="flex-between" style="padding:12px 0;border-bottom:1px solid var(--color-line)">
-        <span style="font-size: 1rem">${esc(a.name)}</span>
-        <div class="row-actions">
-          <button class="icon-btn" style="width:32px;height:32px;border-radius:10px" data-action="manager-rename" data-id="${a.id}" data-type="action" aria-label="给这个动作改名">${SVG.pencil}</button>
-          <button class="icon-btn danger" style="width:32px;height:32px;border-radius:10px" data-action="manager-del" data-id="${a.id}" data-type="action" aria-label="删除这个动作">${SVG.trash}</button>
-        </div>
-      </div>`).join(''),
+    list.map(a => managerRowHtml({
+      type: 'action',
+      id: a.id,
+      title: esc(a.name),
+      params: a.params
+    })).join(''),
     `<input class="input" id="manager-name" placeholder="动作名称" style="flex:1;height:44px">
      <button class="btn btn-primary btn-sm" data-action="manager-add">添加</button>`,
     async () => {
-      const name = document.getElementById('manager-name')?.value?.trim();
-      if (!name) { showToast('请输入动作名称'); return; }
-      await addAction(name);
-      showToast('动作已添加');
+      const input = document.getElementById('manager-name');
+      const name = input?.value?.trim();
+      if (!name) { showFieldError(input, '请先填动作名称'); return; }
+      try {
+        await addAction(name);
+      } catch (err) {
+        showFieldError(input, err.message);
+        return;
+      }
+      showToast('动作已添加', { tone: 'success' });
       closeSheet();
       renderProfile();
     }
@@ -150,7 +193,7 @@ async function showTrash() {
 async function showVersions(recipeId) {
   pushViewState({ view: 'versions', id: recipeId });
   const recipe = await getRecipe(recipeId);
-  const versions = await getVersions(recipeId);
+  const versions = await getVersions(recipeId); // 旧 → 新
   const currentId = versions[versions.length - 1]?.id;
   showPage('page-detail');
 
@@ -164,7 +207,8 @@ async function showVersions(recipeId) {
       </div>
       <div class="version-timeline">
   `;
-  versions.forEach(v => {
+  // 列表按「新 → 旧」展示，当前版本排在最上面
+  [...versions].reverse().forEach(v => {
     const isCurrent = v.id === currentId;
     html += `
       <button class="version-node${isCurrent ? ' current' : ''}" data-action="view-version" data-id="${v.id}">
@@ -240,15 +284,14 @@ async function showVersionDetail(versionId) {
     html += sectionTitle('步骤');
     html += `<div class="card">`;
     data.steps.forEach((s, i) => {
-      const params = [];
-      if (s.heat) params.push(esc(s.heat));
-      if (s.duration) params.push(esc(s.duration));
+      const params = stepDisplayParams(s).map(p => esc(s[p]));
+      const ingTags = (s.ingredients || []).map(n => `<span class="ing">${esc(n)}</span>`).join('');
       html += `
         <div class="step-item">
           <span class="step-number">${i + 1}</span>
           <div class="step-detail">
             <div class="step-action">${esc(s.action || '')}</div>
-            ${params.length ? `<div class="step-params">${params.map(p => `<span>${p}</span>`).join('')}</div>` : ''}
+            ${(params.length || s.cookware || ingTags) ? `<div class="step-params">${ingTags}${s.cookware ? `<span class="cw">${esc(s.cookware)}</span>` : ''}${params.map(p => `<span>${p}</span>`).join('')}</div>` : ''}
             ${s.note ? `<div class="step-note">${esc(s.note)}</div>` : ''}
           </div>
         </div>`;
@@ -287,10 +330,14 @@ async function restoreVersion(versionId) {
           totalCookCount: recipe.totalCookCount,
           averageRating: recipe.averageRating
         }, `恢复到第 ${version.versionNumber} 版`);
-        showToast('已恢复');
+        showToast(`已恢复到第 ${version.versionNumber} 版`, { tone: 'success' });
         showRecipeDetail(recipe.id);
       } catch (e) {
-        showToast('恢复失败：' + e.message);
+        showErrorSheet({
+          title: '恢复没成功',
+          message: e.message,
+          hint: '菜谱内容没有被改动，可以再试一次。'
+        });
       }
     }
   });

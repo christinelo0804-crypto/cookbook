@@ -164,6 +164,13 @@ function openUnsavedSheet() {
 async function init() {
   await initDB();
 
+  // 清理放置超过一天的导入撤销点（正常情况下导入完成时就已清掉）
+  try {
+    await pruneImportSnapshots();
+  } catch (e) {
+    // 清理失败不影响使用
+  }
+
   // 老数据迁移：把 base64 图片转成二进制存储（一次性，幂等）
   try {
     const converted = await migrateLegacyImages();
@@ -183,6 +190,16 @@ async function init() {
     }
   }
 
+  // 动作表升级：加「浸泡」「焖」、去掉「装盘」（只做一次，之后用户自己改了不会再动）
+  if (!localStorage.getItem('my-recipes-actions-v2')) {
+    try {
+      await migrateActionList();
+      localStorage.setItem('my-recipes-actions-v2', '1');
+    } catch (e) {
+      // 失败则下次启动重试
+    }
+  }
+
   App.categories = await getCategories();
   App.cookwares = await getCookwares();
   App.actions = await getActions();
@@ -194,6 +211,7 @@ async function init() {
   renderHome();
 
   document.querySelectorAll('.tab-item').forEach(el => {
+    if (!el.dataset.tab) return;
     el.addEventListener('click', () => switchTab(el.dataset.tab));
   });
 
@@ -219,6 +237,24 @@ async function init() {
   const editPage = $('page-edit');
   editPage.addEventListener('input', markDirty);
   editPage.addEventListener('change', markDirty);
+  // 步骤：选了动作/厨具就重算该显示哪些参数；改了食材就重排动作并刷新提示
+  editPage.addEventListener('change', e => {
+    const editor = e.target.closest('.step-editor');
+    if (editor && (e.target.classList.contains('step-action') || e.target.classList.contains('step-cookware'))) {
+      applyStepParams(editor);
+      return;
+    }
+    if (e.target.classList && e.target.classList.contains('ing-name')) {
+      const prev = e.target.dataset.prev || '';
+      const now = e.target.value.trim();
+      e.target.dataset.prev = now;
+      // 改过名就把步骤里已勾选的那个引用一起改名
+      refreshStepIngredientChips(prev, now);
+      refreshIngredientHint();
+      refreshStepActionOptions();
+      applyAllStepParams();
+    }
+  });
 
   window.addEventListener('beforeunload', e => {
     if (App.currentPage === 'page-edit' && App.editDirty) {
@@ -243,9 +279,27 @@ function showWelcomeSheet() {
         <div class="modal-title">欢迎使用我家菜谱</div>
         <div class="modal-sub">三步就能开始</div>
         <div class="card">
-          <div class="ing-row"><span>1. 新建菜谱</span><span class="ing-amount">记下菜名、食材、步骤</span></div>
-          <div class="ing-row"><span>2. 做菜时打开照做</span><span class="ing-amount">火候、时长一眼看到</span></div>
-          <div class="ing-row"><span>3. 做完点「今天做过」</span><span class="ing-amount">写下评分和改进，菜谱越用越好</span></div>
+          <div class="welcome-step">
+            <span class="welcome-step-no">1</span>
+            <div>
+              <div class="welcome-step-title">新建菜谱</div>
+              <div class="welcome-step-desc">记下菜名、食材和步骤</div>
+            </div>
+          </div>
+          <div class="welcome-step">
+            <span class="welcome-step-no">2</span>
+            <div>
+              <div class="welcome-step-title">做菜时打开照做</div>
+              <div class="welcome-step-desc">火候、时长一眼看到</div>
+            </div>
+          </div>
+          <div class="welcome-step">
+            <span class="welcome-step-no">3</span>
+            <div>
+              <div class="welcome-step-title">做完点「今天做过」</div>
+              <div class="welcome-step-desc">写下评分和改进，菜谱越用越好</div>
+            </div>
+          </div>
         </div>
         <div class="form-hint" style="margin-top:12px">数据保存在这台设备上，记得定期在「我的 → 导出备份」保存一份。</div>
       </div>
@@ -294,7 +348,7 @@ async function renderHome() {
   container.innerHTML = `
     <div class="search-bar">
       <span class="search-bar-icon">${SVG.search}</span>
-      <input type="text" placeholder="搜索菜谱、食材、厨具…" value="${esc(App.searchQuery)}" id="home-search-input">
+      <input type="text" placeholder="搜索菜谱、食材、厨具…" value="${escAttr(App.searchQuery)}" id="home-search-input">
     </div>
     <div id="home-body"></div>
   `;
@@ -325,9 +379,16 @@ async function renderHomeBody() {
     }
   } else {
     const recentRecords = await getAllCookRecords();
-    const recentRecipeIds = [...new Set(recentRecords.map(r => r.recipeId))];
-    const recentRecipes = App.recipes.filter(r => recentRecipeIds.includes(r.id)).slice(0, 3);
-    const freq = stats.frequent.slice(0, 3);
+    // 最近做过：按「最后一次做这道菜的时间」倒序，最多 6 道（2 行 × 3 列）
+    const lastCookByRecipe = new Map();
+    for (const record of recentRecords) {
+      if (!lastCookByRecipe.has(record.recipeId)) lastCookByRecipe.set(record.recipeId, record.date);
+    }
+    const recentRecipes = [...lastCookByRecipe.keys()]
+      .map(id => App.recipes.find(r => r.id === id))
+      .filter(Boolean)
+      .slice(0, 6);
+    const freq = stats.frequent.slice(0, 6);
 
     html += `
       <button class="stats-card stats-card-button" data-action="open-stats" aria-label="查看菜谱统计">
@@ -340,12 +401,12 @@ async function renderHomeBody() {
     if (recentRecipes.length > 0) {
       html += sectionTitle('最近做过');
       html += `<div class="freq-grid">` + recentRecipes.map(r => {
-        const rec = recentRecords.find(rc => rc.recipeId === r.id);
+        const lastDate = lastCookByRecipe.get(r.id);
         return `
           <button class="freq-card" data-action="open-recipe" data-id="${r.id}">
             ${tileHtml(r, 'md')}
             <span class="freq-card-name">${esc(r.name)}</span>
-            <span class="freq-card-sub">${rec ? friendlyDate(rec.date) : ''}</span>
+            <span class="freq-card-sub">${lastDate ? friendlyDate(lastDate) : ''}</span>
           </button>`;
       }).join('') + `</div>`;
     }
@@ -365,11 +426,6 @@ async function renderHomeBody() {
         <div class="empty-state">
           <div class="empty-state-icon">${SVG.book}</div>
           <div class="empty-state-text">还没有菜谱<br>记录你的第一道菜吧</div>
-          <button class="btn btn-primary" data-action="new-recipe">${SVG.plus} 新建菜谱</button>
-        </div>`;
-    } else {
-      html += `
-        <div class="action-bar home-bar">
           <button class="btn btn-primary" data-action="new-recipe">${SVG.plus} 新建菜谱</button>
         </div>`;
     }
@@ -411,7 +467,7 @@ async function renderCookbook() {
 
   const container = $('cookbook-content');
   let html = `
-    <div class="flex-between" style="margin-bottom:12px">
+    <div class="page-head">
       <div style="display:flex;align-items:baseline;gap:8px">
         <span class="page-title">菜谱</span>
         <span class="page-count">${App.recipes.length} 道</span>
@@ -431,7 +487,7 @@ async function renderCookbook() {
     <div class="search-row">
       <div class="search-bar">
         <span class="search-bar-icon">${SVG.search}</span>
-        <input type="text" placeholder="在菜谱里搜索…" value="${esc(App.cookbookQuery)}" id="cookbook-search-input">
+        <input type="text" placeholder="在菜谱里搜索…" value="${escAttr(App.cookbookQuery)}" id="cookbook-search-input">
       </div>
       <button class="filter-btn${activeCount ? ' active' : ''}" data-action="open-filter-sheet" aria-label="筛选">
         ${SVG.sliders}<span>筛选</span>${activeCount ? `<span class="filter-badge">${activeCount}</span>` : ''}
@@ -615,7 +671,7 @@ function facetCount(base, key, matcher) {
 function filterChip(action, group, value, label, on, count, showCount) {
   const disabled = !on && count === 0;
   if (disabled) return '';
-  return `<button type="button" class="chip${on ? ' on' : ''}" data-action="${action}" data-group="${group}" data-value="${esc(value)}">${esc(label)}${showCount ? ` <span class="chip-count">${count}</span>` : ''}</button>`;
+  return `<button type="button" class="chip${on ? ' on' : ''}" data-action="${action}" data-group="${group}" data-value="${escAttr(value)}">${esc(label)}${showCount ? ` <span class="chip-count">${count}</span>` : ''}</button>`;
 }
 
 async function showFilterSheet() {
@@ -734,7 +790,7 @@ async function showFilterSheet() {
 async function showRecipeDetail(id) {
   pushViewState({ view: 'detail', id });
   const recipe = await getRecipe(id);
-  if (!recipe) { showToast('菜谱不存在'); return; }
+  if (!recipe) { showToast('菜谱不存在', { tone: 'error' }); return; }
   App.viewingRecipe = recipe;
   App.fromPage = App.currentPage === 'page-cookbook' ? 'cookbook'
     : App.currentPage === 'page-records' ? 'records'
@@ -744,7 +800,6 @@ async function showRecipeDetail(id) {
 
   const versions = await getVersions(id);
   const records = await getCookRecords(id);
-  const currentVersion = versions[versions.length - 1];
   const cat = recipeFirstCat(recipe);
 
   let html = `
@@ -784,7 +839,7 @@ async function showRecipeDetail(id) {
   if (recipe.images && recipe.images.length > 1) {
     html += `<div class="photo-strip">`;
     recipe.images.slice(1).forEach((img, i) => {
-      html += `<button class="photo-strip-btn" data-action="open-photo" data-id="${recipe.id}" data-index="${i + 1}" aria-label="查看第 ${i + 2} 张照片"><img src="${imageSrc(img)}" alt="${esc(recipe.name)}"></button>`;
+      html += `<button class="photo-strip-btn" data-action="open-photo" data-id="${recipe.id}" data-index="${i + 1}" aria-label="查看第 ${i + 2} 张照片"><img src="${imageSrc(img)}" alt="${escAttr(recipe.name)}"></button>`;
     });
     html += `</div>`;
   }
@@ -811,16 +866,15 @@ async function showRecipeDetail(id) {
     html += sectionTitle('步骤');
     html += `<div class="card">`;
     recipe.steps.forEach((s, i) => {
-      const params = [];
-      if (s.heat) params.push(esc(s.heat));
-      if (s.duration) params.push(esc(s.duration));
-      if (s.temperature) params.push(esc(s.temperature));
+      // 只显示这一步规则允许、并且填了值的参数；用了厨具的先把厨具标出来
+      const params = stepDisplayParams(s).map(p => esc(s[p]));
+      const ingTags = (s.ingredients || []).map(n => `<span class="ing">${esc(n)}</span>`).join('');
       html += `
         <div class="step-item">
           <span class="step-number">${i + 1}</span>
           <div class="step-detail">
             <div class="step-action">${esc(s.action || '')}</div>
-            ${params.length ? `<div class="step-params">${params.map(p => `<span>${p}</span>`).join('')}</div>` : ''}
+            ${(params.length || s.cookware || ingTags) ? `<div class="step-params">${ingTags}${s.cookware ? `<span class="cw">${esc(s.cookware)}</span>` : ''}${params.map(p => `<span>${p}</span>`).join('')}</div>` : ''}
             ${s.note ? `<div class="step-note">${esc(s.note)}</div>` : ''}
           </div>
         </div>`;
@@ -904,12 +958,12 @@ async function showRecipeMenu(recipeId) {
 
 async function copyRecipe(recipeId) {
   try {
-    showToast('正在复制…');
+    showToast('正在复制…', { tone: 'progress' });
     const newId = await duplicateRecipe(recipeId);
-    showToast('已复制，改好名字后保存');
+    showToast('已复制，改好名字后保存', { tone: 'success' });
     await showEditRecipe(newId);
   } catch (e) {
-    showToast('复制失败：' + e.message);
+    showToast('复制失败：' + e.message, { tone: 'error' });
   }
 }
 
@@ -924,9 +978,16 @@ async function confirmDeleteRecipe(recipeId) {
     danger: true,
     onConfirm: async () => {
       await deleteRecipe(recipeId);
-      showToast('已移入回收站');
       goBack();
       renderCookbook();
+      showActionToast('已移入回收站', {
+        actionText: '撤销',
+        onAction: async () => {
+          await restoreRecipe(recipeId);
+          await refreshAppData();
+          showToast('已恢复到菜谱列表', { tone: 'success' });
+        }
+      });
     }
   });
 }
@@ -942,7 +1003,7 @@ async function confirmPurgeRecipe(recipeId) {
     danger: true,
     onConfirm: async () => {
       await purgeRecipe(recipeId);
-      showToast('已永久删除');
+      showToast('已永久删除', { tone: 'success' });
       showTrash();
       renderProfile();
     }
@@ -963,7 +1024,7 @@ async function showImageViewer(recipeId, startIndex) {
   overlay.innerHTML = `
     <button class="image-viewer-close" data-viewer="close" aria-label="关闭">${SVG.x}</button>
     <div class="image-viewer-stage">
-      <img class="image-viewer-img" src="${imageSrc(images[index])}" alt="${esc(recipe.name)}">
+      <img class="image-viewer-img" src="${imageSrc(images[index])}" alt="${escAttr(recipe.name)}">
     </div>
     ${images.length > 1 ? `
       <div class="image-viewer-bar">
@@ -1037,8 +1098,9 @@ async function renderEditForm(recipe) {
 
   const isEdit = !!recipe;
   const r = recipe || {
-    name: '', categoryIds: [], serving: '4人份', images: [],
-    ingredients: [], cookwares: [], steps: [{ action: '', heat: '', temperature: '', duration: '', note: '' }]
+    name: '', categoryIds: [], serving: '', images: [],
+    ingredients: [], cookwares: [],
+    steps: [{ action: '', cookware: '', ingredients: [], heat: '', temperature: '', duration: '', note: '' }]
   };
   const selCats = r.categoryIds || [];
   const selCws = (r.cookwares || []).map(c => (c.name || c));
@@ -1056,7 +1118,7 @@ async function renderEditForm(recipe) {
       <div class="card">
         <div class="form-group">
           <label class="form-label">菜名</label>
-          <input class="input" id="edit-name" value="${esc(r.name || '')}" placeholder="例：红烧肉">
+          <input class="input" id="edit-name" value="${escAttr(r.name || '')}" placeholder="例：红烧肉">
         </div>
         <div class="form-group">
           <label class="form-label">简介（选填）</label>
@@ -1065,11 +1127,11 @@ async function renderEditForm(recipe) {
         <div class="form-group">
           <label class="form-label">分类（可多选）</label>
           <div class="chips-wrap">
-            ${App.categories.map(c => `<button type="button" class="chip${selCats.includes(c.name) ? ' on' : ''}" data-action="cat-toggle" data-cat="${esc(c.name)}">${esc(c.name)}</button>`).join('')}
+            ${App.categories.map(c => `<button type="button" class="chip${selCats.includes(c.name) ? ' on' : ''}" data-action="cat-toggle" data-cat="${escAttr(c.name)}">${esc(c.name)}</button>`).join('')}
           </div>
         </div>
         <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">份量</label>
+          <label class="form-label">份量（选填）</label>
           <div class="chips-wrap">
             ${['1人份', '2人份', '4人份', '6人份', '8人份'].map(s =>
               `<button type="button" class="chip${r.serving === s ? ' on' : ''}" data-action="serving" data-s="${s}">${s}</button>`).join('')}
@@ -1092,12 +1154,13 @@ async function renderEditForm(recipe) {
           ${(r.ingredients || []).map((ing, i) => ingredientRowHtml(i, ing)).join('')}
         </div>
         <button type="button" class="add-row-btn" data-action="add-ingredient">${SVG.plus} 添加食材</button>
+        <div class="form-hint" id="ingredient-hint" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
         <div class="card-head">${SVG.tool} 厨具</div>
         <div class="chips-wrap">
-          ${App.cookwares.map(c => `<button type="button" class="chip${selCws.includes(c.name) ? ' on' : ''}" data-action="cw-toggle" data-cw="${esc(c.name)}">${esc(c.name)}</button>`).join('')}
+          ${App.cookwares.map(c => `<button type="button" class="chip${selCws.includes(c.name) ? ' on' : ''}" data-action="cw-toggle" data-cw="${escAttr(c.name)}">${esc(c.name)}</button>`).join('')}
         </div>
       </div>
 
@@ -1117,6 +1180,12 @@ async function renderEditForm(recipe) {
 
   $('page-edit').innerHTML = html;
   renderPhotoTiles();
+  // 这里必须等 DOM 插入之后再填下拉：动作的可选项要看食材，厨具要看上面勾了哪些
+  refreshStepIngredientChips();
+  refreshIngredientHint();
+  refreshStepActionOptions();
+  refreshStepCookwareOptions();
+  applyAllStepParams();
 }
 
 function renderPhotoTiles() {
@@ -1140,8 +1209,8 @@ function ingredientRowHtml(index, ing) {
   ing = ing || { name: '', amount: '' };
   return `
     <div class="ingredient-row" data-index="${index}">
-      <input class="input ing-name" value="${esc(ing.name)}" placeholder="食材名称">
-      <input class="input ingredient-amount" value="${esc(ing.amount || '')}" placeholder="用量">
+      <input class="input ing-name" value="${escAttr(ing.name)}" data-prev="${escAttr(ing.name)}" placeholder="食材名称">
+      <input class="input ingredient-amount" value="${escAttr(ing.amount || '')}" placeholder="用量">
       <div class="row-actions">
         <button type="button" class="icon-btn small" data-action="move-up" aria-label="上移">${SVG.chevUp}</button>
         <button type="button" class="icon-btn small" data-action="move-down" aria-label="下移">${SVG.chevDown}</button>
@@ -1151,7 +1220,9 @@ function ingredientRowHtml(index, ing) {
 }
 
 function stepEditorHtml(index, step) {
-  step = step || { action: '', heat: '', temperature: '', duration: '', note: '' };
+  step = step || { action: '', cookware: '', heat: '', temperature: '', duration: '', note: '' };
+  // 动作和厨具的可选项要等页面插入 DOM 之后再填（那时才读得到食材和已勾选的厨具），
+  // 这里先把当前值放在 data-* 上，由 refreshStepActionOptions / refreshStepCookwareOptions 补全
   return `
     <div class="step-editor" data-index="${index}">
       <div class="step-editor-head">
@@ -1163,32 +1234,40 @@ function stepEditorHtml(index, step) {
           <button type="button" class="x-btn" data-action="remove-step" aria-label="删除这一步">${SVG.x}</button>
         </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">动作</label>
-        <select class="select step-action">
-          <option value="">选择动作</option>
-          ${App.actions.map(a => `<option value="${esc(a.name)}"${step.action === a.name ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
-        </select>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">动作</label>
+          ${selectButtonHtml({ className: 'step-action', title: '选择动作', placeholder: '选择动作', value: step.action || '' })}
+        </div>
+        <div class="form-group">
+          <label class="form-label">厨具（选填）</label>
+          ${selectButtonHtml({ className: 'step-cookware', title: '选择厨具', placeholder: '先在上面选厨具', value: step.cookware || '', disabled: true })}
+        </div>
       </div>
       <div class="form-group">
+        <label class="form-label">这一步处理哪些食材（选填）</label>
+        <div class="chips-wrap step-ingredients" data-selected="${escAttr(JSON.stringify(step.ingredients || []))}"></div>
+        <div class="form-hint" style="margin-top:6px">从上面「食材」里选，可多选；不选也行</div>
+      </div>
+      <div class="form-group" data-param="heat">
         <label class="form-label">火候（选填）</label>
         <div class="chips-wrap">
-          ${['小火', '中小火', '中火', '中大火', '大火'].map(h =>
+          ${DEFAULT_HEAT_LEVELS.map(h =>
             `<button type="button" class="chip${step.heat === h ? ' on' : ''}" data-action="heat-toggle" data-heat="${h}">${h}</button>`).join('')}
         </div>
       </div>
       <div class="form-row">
-        <div class="form-group">
+        <div class="form-group" data-param="duration">
           <label class="form-label">时长</label>
           <div class="input-with-unit">
-            <input class="input step-duration" value="${esc(step.duration ? step.duration.replace('分钟', '') : '')}" placeholder="如 5" inputmode="numeric">
+            <input class="input step-duration" value="${escAttr(step.duration ? step.duration.replace('分钟', '') : '')}" placeholder="如 5" inputmode="numeric">
             <span class="input-unit">分钟</span>
           </div>
         </div>
-        <div class="form-group">
+        <div class="form-group" data-param="temperature">
           <label class="form-label">温度（选填）</label>
           <div class="input-with-unit">
-            <input class="input step-temperature" value="${esc(step.temperature ? step.temperature.replace('℃', '') : '')}" placeholder="如 180" inputmode="numeric">
+            <input class="input step-temperature" value="${escAttr(step.temperature ? step.temperature.replace('℃', '') : '')}" placeholder="如 180" inputmode="numeric">
             <span class="input-unit">℃</span>
           </div>
         </div>
@@ -1197,18 +1276,153 @@ function stepEditorHtml(index, step) {
         <label class="form-label">备注</label>
         <textarea class="input step-note" placeholder="例：冷水下锅，撇去浮沫">${esc(step.note || '')}</textarea>
       </div>
+      <div class="form-hint step-param-hint" style="display:none;margin-top:8px"></div>
     </div>`;
+}
+
+/** 表单里当前填了哪些食材 */
+function currentIngredientNames() {
+  return [...document.querySelectorAll('#ingredients-list .ing-name')]
+    .map(el => el.value.trim())
+    .filter(Boolean);
+}
+
+/** 这道菜在「厨具」里勾了哪些 */
+function selectedRecipeCookwares() {
+  return [...document.querySelectorAll('#page-edit [data-action="cw-toggle"].on')].map(el => el.dataset.cw);
+}
+
+/** 按当前动作 + 厨具，决定这一步显示哪些参数 */
+function applyStepParams(editor) {
+  if (!editor) return;
+  const actionSel = editor.querySelector('.step-action');
+  const cwSel = editor.querySelector('.step-cookware');
+  // 记下来，重建下拉选项时才不会把用户已选的值丢掉
+  if (actionSel) actionSel.dataset.actionName = actionSel.value;
+  if (cwSel) cwSel.dataset.cookware = cwSel.value;
+  const actionName = actionSel?.value || '';
+  const cookwareName = cwSel?.value || '';
+  const params = stepParamsFor(actionName, cookwareName);
+
+  STEP_PARAMS.forEach(key => {
+    const group = editor.querySelector(`[data-param="${key}"]`);
+    if (group) group.style.display = params.includes(key) ? '' : 'none';
+  });
+
+  // 提示只说明怎么操作，不给烹饪建议
+  const tip = editor.querySelector('.step-param-hint');
+  if (!tip) return;
+  let message = '';
+  if (!actionName) {
+    message = '选好动作后，需要填的项目会自动出现';
+  } else if (params.length === 0) {
+    message = '这一步不用填火候和温度，写备注就行';
+  }
+  tip.textContent = message;
+  tip.style.display = message ? '' : 'none';
+}
+
+function applyAllStepParams() {
+  document.querySelectorAll('#steps-list .step-editor').forEach(applyStepParams);
+}
+
+/** 厨具勾选变化后，同步每一步的「厨具」下拉，尽量保留原来选的那件 */
+function refreshStepCookwareOptions() {
+  const names = selectedRecipeCookwares();
+  document.querySelectorAll('#steps-list .step-cookware').forEach(el => {
+    const current = el.dataset.cookware || el.value || '';
+    const list = names.slice();
+    if (current && !list.includes(current)) list.unshift(current);
+    const options = list.map(n => ({ value: n, label: n }));
+    updateSelectButton(el, {
+      options,
+      value: current,
+      placeholder: options.length ? '不指定' : '先在上面选厨具',
+      disabled: options.length === 0
+    });
+    applyStepParams(el.closest('.step-editor'));
+  });
+}
+
+/** 按动作表的顺序填充每一步的动作下拉（老数据里已不在列表的动作也保留） */
+function refreshStepActionOptions() {
+  document.querySelectorAll('#steps-list .step-action').forEach(el => {
+    const current = el.dataset.actionName || el.value || '';
+    const options = App.actions.map(a => ({ value: a.name, label: a.name }));
+    // 动作表里已经没有这个名字时（比如老菜谱里的「装盘」）也留着，避免保存时被清掉
+    if (current && !options.some(o => o.value === current)) {
+      options.push({ value: current, label: current });
+    }
+    updateSelectButton(el, { options, value: current });
+  });
+}
+
+/** 食材卡下面的反馈：哪些食材已经安排到步骤里、哪些还没安排 */
+function refreshIngredientHint() {
+  const el = $('#ingredient-hint');
+  if (!el) return;
+  const names = currentIngredientNames();
+  if (!names.length) {
+    el.textContent = '填好食材后，下面的每一步可以勾选它处理哪些食材';
+    return;
+  }
+  const used = new Set();
+  document.querySelectorAll('#steps-list .step-ingredients .chip.on').forEach(c => used.add(c.dataset.name));
+  if (!used.size) {
+    el.textContent = '还没有步骤勾选食材，在下面每一步的「处理哪些食材」里可以勾';
+    return;
+  }
+  const unused = names.filter(n => !used.has(n));
+  el.textContent = unused.length
+    ? `已安排到步骤：${[...used].join('、')}；还没安排：${unused.join('、')}`
+    : `食材都已安排到步骤：${[...used].join('、')}`;
+}
+
+/**
+ * 每一步的「处理哪些食材」：选项就是用户自己填的食材，不依赖任何词库。
+ * renameFrom/renameTo 用于在食材改名时把已勾选的引用一起改名。
+ */
+function refreshStepIngredientChips(renameFrom = '', renameTo = '') {
+  const names = currentIngredientNames();
+  document.querySelectorAll('#steps-list .step-editor').forEach(editor => {
+    const wrap = editor.querySelector('.step-ingredients');
+    if (!wrap) return;
+    // 已选：页面上正在勾的优先；刚打开编辑页时页面还没渲染，就读这一步保存下来的
+    let selected = [...wrap.querySelectorAll('.chip.on')].map(c => c.dataset.name);
+    if (!selected.length) {
+      try {
+        selected = JSON.parse(wrap.dataset.selected || '[]');
+      } catch (e) {
+        selected = [];
+      }
+    }
+    if (renameFrom && renameTo) selected = selected.map(n => (n === renameFrom ? renameTo : n));
+    wrap.dataset.selected = JSON.stringify(selected);
+    wrap.innerHTML = names.length
+      ? names.map(n => `<button type="button" class="chip chip-sm${selected.includes(n) ? ' on' : ''}" data-action="step-ingredient" data-name="${escAttr(n)}">${esc(n)}</button>`).join('')
+      : '<span class="text-tertiary" style="font-size: 0.875rem">先在上面「食材」里填好，这里就能选</span>';
+  });
 }
 
 async function saveRecipe() {
   const name = $('#edit-name')?.value?.trim();
-  if (!name) { showToast('请输入菜名'); return; }
+  if (!name) { showFieldError($('#edit-name'), '请先填上菜名，再保存'); return; }
+
+  // 结构化比较用：JSON.stringify 对字段顺序敏感（步骤对象重建时顺序会变），
+  // 直接比较会把"没改动"误判成"有改动"，从而白白多出一版历史记录。
+  const stableStringify = value => JSON.stringify(value, (key, val) => {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      return Object.keys(val).sort().reduce((acc, k) => { acc[k] = val[k]; return acc; }, {});
+    }
+    return val;
+  });
 
   const description = $('#edit-description')?.value?.trim() || '';
 
   const categoryIds = [];
   document.querySelectorAll('#page-edit [data-action="cat-toggle"].on').forEach(el => categoryIds.push(el.dataset.cat));
-  const serving = document.querySelector('#page-edit [data-action="serving"].on')?.dataset?.s || '4人份';
+  // 份量不再默认填「4人份」，没选就是空
+  const serving = document.querySelector('#page-edit [data-action="serving"].on')?.dataset?.s || '';
 
   const ingredients = [];
   document.querySelectorAll('#ingredients-list .ingredient-row').forEach(row => {
@@ -1223,6 +1437,8 @@ async function saveRecipe() {
   const steps = [];
   document.querySelectorAll('#steps-list .step-editor').forEach(el => {
     const action = el.querySelector('.step-action')?.value;
+    const cookware = el.querySelector('.step-cookware')?.value || '';
+    const stepIngredients = [...el.querySelectorAll('.step-ingredients .chip.on')].map(c => c.dataset.name);
     const heat = el.querySelector('[data-action="heat-toggle"].on')?.dataset?.heat || '';
     const durationRaw = el.querySelector('.step-duration')?.value?.trim();
     const temperatureRaw = el.querySelector('.step-temperature')?.value?.trim();
@@ -1230,6 +1446,8 @@ async function saveRecipe() {
     if (action) {
       steps.push({
         action,
+        cookware,
+        ingredients: stepIngredients,
         heat,
         duration: durationRaw ? `${durationRaw}分钟` : '',
         temperature: temperatureRaw ? `${temperatureRaw}℃` : '',
@@ -1253,29 +1471,46 @@ async function saveRecipe() {
         ingredients: old.ingredients, cookwares: old.cookwares, steps: old.steps,
         images: imageSignature(old.images)
       };
-      const changed = JSON.stringify({
+      const changed = stableStringify({
         name: data.name, description: data.description, categoryIds: data.categoryIds, serving: data.serving,
         ingredients: data.ingredients, cookwares: data.cookwares, steps: data.steps,
         images: imageSignature(data.images)
-      }) !== JSON.stringify(oldData);
-      if (changed) {
-        await saveRecipeWithVersion(old.id, data, '');
-        showToast('菜谱已更新');
-      } else {
-        showToast('没有变化');
+      }) !== stableStringify(oldData);
+      if (!changed) {
+        // 按了保存却什么都没变：说清楚为什么不生成新版本，避免被当成保存失败
+        App.editDirty = false;
+        showInfoSheet({
+          title: '内容没有变化',
+          message: '这一版和上次保存的内容完全一样，所以没有生成新的版本记录。',
+          hint: '想留一条修改记录的话，可以改动一点内容（比如用量、步骤）再保存。',
+          confirmText: '返回菜谱',
+          onConfirm: () => {
+            goBack();
+            renderCookbook();
+          }
+        });
+        return;
       }
+      await saveRecipeWithVersion(old.id, data, '');
+      showToast('菜谱已更新', { tone: 'success' });
       App.editDirty = false;
       goBack();
       renderCookbook();
     } else {
       await createRecipe(data);
-      showToast('菜谱创建成功！');
+      showToast('菜谱创建成功！', { tone: 'success' });
       App.editDirty = false;
       goBack();
       renderCookbook();
     }
   } catch (e) {
-    showToast('保存失败：' + e.message);
+    showErrorSheet({
+      title: '保存没成功',
+      message: e.message,
+      hint: '你刚才填的内容还留在这页上，可以再试一次。',
+      retryText: '重试保存',
+      onRetry: () => saveRecipe()
+    });
   }
 }
 
@@ -1296,13 +1531,18 @@ function showRecordSheet(recipeId, withSelect, record) {
         <div class="modal-sub" id="sheet-sub">${withSelect ? '选择今天做的菜' : esc(App.viewingRecipe?.name || '')}</div>
         <div class="form-group">
           <label class="form-label">菜谱</label>
-          <select class="select" id="sheet-recipe">
-            ${App.recipes.map(r => `<option value="${r.id}"${r.id === recipeId ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}
-          </select>
+          ${selectButtonHtml({
+            id: 'sheet-recipe',
+            title: '选择菜谱',
+            placeholder: App.recipes.length ? '选择菜谱' : '先去建一道菜谱',
+            options: App.recipes.map(r => ({ value: String(r.id), label: r.name })),
+            value: recipeId == null ? '' : String(recipeId),
+            disabled: App.recipes.length === 0
+          })}
         </div>
         <div class="form-group">
           <label class="form-label">日期</label>
-          <input class="input" id="sheet-date" type="date" value="${editing && editing.date ? editing.date : todayStr()}">
+          ${dateButtonHtml({ id: 'sheet-date', value: (editing && editing.date) || todayStr(), title: '选择日期' })}
         </div>
         <div class="form-group">
           <label class="form-label">这次做得怎么样？</label>
@@ -1316,7 +1556,7 @@ function showRecordSheet(recipeId, withSelect, record) {
           <label class="form-label">结果</label>
           <div class="chips-wrap" id="sheet-results">
             ${['偏咸', '偏淡', '偏甜', '偏辣', '完美', '太生', '太熟'].map(t =>
-              `<button type="button" class="chip${editing && (editing.results || []).includes(t) ? ' on' : ''}" data-action="result-toggle" data-t="${esc(t)}">${t}</button>`).join('')}
+              `<button type="button" class="chip${editing && (editing.results || []).includes(t) ? ' on' : ''}" data-action="result-toggle" data-t="${escAttr(t)}">${t}</button>`).join('')}
           </div>
         </div>
         <div class="form-group">
@@ -1345,7 +1585,9 @@ function showRecordSheet(recipeId, withSelect, record) {
 }
 
 function closeSheet() {
-  document.querySelector('.modal-overlay')?.remove();
+  // 关最上面那层：选择器可能是叠在别的弹窗上打开的
+  const sheets = document.querySelectorAll('.modal-overlay');
+  sheets[sheets.length - 1]?.remove();
 }
 
 /** 记录弹窗里的可打分星星（支持半星） */
@@ -1364,11 +1606,19 @@ function updateSheetStars() {
 }
 
 async function saveRecordSheet() {
-  const overlay = document.querySelector('.modal-overlay');
+  // 明确取「记一笔」这张弹窗，避免上面还叠着选择器时取错
+  const overlay = document.querySelector('#sheet-recipe')?.closest('.modal-overlay') || document.querySelector('.modal-overlay');
   if (!overlay) return;
   const recipeId = +overlay.querySelector('#sheet-recipe')?.value;
   const recipe = App.recipes.find(r => r.id === recipeId);
-  if (!recipe) { showToast('请选择菜谱'); return; }
+  if (!recipe) {
+    const sel = overlay.querySelector('#sheet-recipe');
+    if (sel) {
+      sel.closest('.form-group').style.display = '';
+      showFieldError(sel, '先选一道菜，再保存记录');
+    }
+    return;
+  }
 
   const versions = await getVersions(recipeId);
   const currentVersion = versions[versions.length - 1];
@@ -1391,7 +1641,7 @@ async function saveRecordSheet() {
   }
 
   overlay.remove();
-  showToast(editing ? '记录已更新' : '记录已保存');
+  showToast(editing ? '记录已更新' : '记录已保存', { tone: 'success' });
   App.editingRecord = null;
   if (App.currentPage === 'page-detail') {
     showRecipeDetail(recipeId);
@@ -1435,31 +1685,43 @@ async function renderRecords() {
 
   let html = '';
   html += `
-    <div class="flex-between" style="margin-bottom:14px">
+    <div class="page-head">
       <div style="display:flex;align-items:baseline;gap:8px">
         <span class="page-title">做菜记录</span>
         <span class="page-count">${App.recordsFilterRecipeId ? `筛选出 ${filtered.length} 条` : `共 ${records.length} 条`}</span>
       </div>
-      <button class="btn btn-sm btn-primary" data-action="record-sheet">${SVG.plus} 记一笔</button>
+      ${App.recipes.length
+        ? `<button class="btn btn-sm btn-primary" data-action="record-sheet">${SVG.plus} 记一笔</button>`
+        : '<button class="btn btn-sm btn-secondary" disabled>还没有菜谱</button>'}
     </div>
   `;
 
   html += `
     <div class="stats-card">
       <div class="stat"><span class="stat-value">${stats.monthCount}</span><span class="stat-label">本月做过</span></div>
-      <div class="stat"><span class="stat-value">${mostFreq ? mostFreq.totalCookCount : 0}</span><span class="stat-label">最常做<br>${mostFreq ? esc(mostFreq.name) : '—'}</span></div>
+      <div class="stat"><span class="stat-value">${mostFreq ? mostFreq.totalCookCount : 0}</span><span class="stat-label">最常做 · ${mostFreq ? esc(mostFreq.name) : '—'}</span></div>
       <div class="stat"><span class="stat-value">${stats.avgRating}</span><span class="stat-label">平均评分</span></div>
     </div>
   `;
 
   if (records.length > 0 && recipeOptions.length > 1) {
+    const pickerCurrent = App.recordsFilterRecipeId
+      ? recipeOptions.find(o => o.id === App.recordsFilterRecipeId) || null
+      : null;
+    const countByRecipe = new Map();
+    for (const record of records) {
+      countByRecipe.set(record.recipeId, (countByRecipe.get(record.recipeId) || 0) + 1);
+    }
+    const pickerValue = pickerCurrent
+      ? `${pickerCurrent.name} · ${countByRecipe.get(pickerCurrent.id) || 0} 条`
+      : `全部 · ${records.length} 条`;
     html += `
-      <div style="margin-top:14px">
-        <select class="select" id="records-recipe-filter" aria-label="按菜谱筛选记录">
-          <option value="">全部菜谱（${records.length} 条记录）</option>
-          ${recipeOptions.map(o => `<option value="${o.id}"${App.recordsFilterRecipeId === o.id ? ' selected' : ''}>${esc(o.name)}</option>`).join('')}
-        </select>
-      </div>
+      <button class="picker-entry${pickerCurrent ? ' active' : ''}" data-action="open-records-picker" aria-label="按菜谱查看记录">
+        <span class="picker-entry-icon">${SVG.sliders}</span>
+        <span class="picker-entry-label">按菜谱查看记录</span>
+        <span class="picker-entry-value">${esc(pickerValue)}</span>
+        <span class="picker-entry-arrow">${SVG.chevR}</span>
+      </button>
     `;
   }
 
@@ -1468,7 +1730,9 @@ async function renderRecords() {
       <div class="empty-state">
         <div class="empty-state-icon">${SVG.clipboard}</div>
         <div class="empty-state-text">还没有做菜记录<br>做完菜记得回来记一笔</div>
-        <button class="btn btn-primary" data-action="record-sheet">${SVG.plus} 记录今天</button>
+        ${App.recipes.length
+          ? `<button class="btn btn-primary" data-action="record-sheet">${SVG.plus} 记录今天</button>`
+          : '<div class="form-hint">先去「菜谱」里建一道菜，就能回来记一笔了</div>'}
       </div>`;
   } else if (filtered.length === 0) {
     html += `<div class="empty-state"><div class="empty-state-icon">${SVG.inbox}</div><div class="empty-state-text">这道菜还没有记录</div></div>`;
@@ -1489,10 +1753,13 @@ async function renderRecords() {
     for (const monthKey of months) {
       const items = monthMap.get(monthKey);
       const collapsed = App.collapsedMonths.includes(monthKey);
-      const month = monthKey.split('-')[1];
+      const [yearOfMonth, month] = monthKey.split('-');
+      // 跨年的月份要在标题里带上年份，否则"9 月"分不清是哪一年
+      const sameYear = Number(yearOfMonth) === new Date().getFullYear();
+      const monthLabel = sameYear ? `${Number(month)} 月` : `${yearOfMonth} 年 ${Number(month)} 月`;
       html += `
         <button class="record-group-title month-toggle" data-action="toggle-month" data-month="${monthKey}" aria-expanded="${!collapsed}">
-          <span class="bar"></span>${Number(month)} 月 · ${items.length} 次
+          <span class="bar"></span>${monthLabel} · ${items.length} 次
           <span class="month-arrow${collapsed ? ' collapsed' : ''}">${SVG.chevDown}</span>
         </button>`;
       if (collapsed) continue;
@@ -1521,13 +1788,76 @@ async function renderRecords() {
 
   container.innerHTML = html;
 
-  const filterSelect = $('#records-recipe-filter');
-  if (filterSelect) {
-    filterSelect.addEventListener('change', () => {
-      App.recordsFilterRecipeId = filterSelect.value ? +filterSelect.value : null;
-      renderRecords();
-    });
+}
+
+/** 按菜谱筛选记录：可搜索的底部选择器（菜谱多的时候不用翻很长的下拉） */
+async function showRecordsRecipePicker() {
+  const records = await getAllCookRecords();
+  if (!App.recipes.length) App.recipes = await getAllRecipes();
+
+  const info = new Map();
+  for (const record of records) {
+    const entry = info.get(record.recipeId) || { count: 0, last: '' };
+    entry.count += 1;
+    if (String(record.date) > entry.last) entry.last = String(record.date);
+    info.set(record.recipeId, entry);
   }
+  const items = [...info.entries()]
+    .map(([id, entry]) => ({
+      id,
+      name: (App.recipes.find(r => r.id === id) || {}).name || '已删除的菜谱',
+      count: entry.count,
+      last: entry.last
+    }))
+    .sort((a, b) => (b.last || '').localeCompare(a.last || ''));  // 最近做过的排前面
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <div class="modal-sheet-body">
+        <div class="modal-handle"></div>
+        <div class="modal-title">按菜谱筛选</div>
+        <div class="modal-sub">最近做过的排在最前面</div>
+        <div class="search-bar" style="margin: 0 0 8px">
+          <span class="search-bar-icon">${SVG.search}</span>
+          <input type="text" id="picker-search" placeholder="搜索菜名…" autocomplete="off">
+        </div>
+        <div id="picker-list"></div>
+      </div>
+      <div class="modal-sheet-footer">
+        <button class="btn btn-secondary btn-block" data-action="close-sheet">取消</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const listEl = overlay.querySelector('#picker-list');
+  const searchEl = overlay.querySelector('#picker-search');
+
+  const renderList = () => {
+    const keyword = searchEl.value.trim().toLowerCase();
+    const filtered = keyword ? items.filter(i => i.name.toLowerCase().includes(keyword)) : items;
+    let html = `
+      <button class="picker-row${App.recordsFilterRecipeId ? '' : ' on'}" data-action="pick-records-recipe" data-id="">
+        <span class="picker-name">全部菜谱</span>
+        <span class="picker-count">${records.length} 条</span>
+      </button>`;
+    if (filtered.length === 0) {
+      html += `<div class="empty-state" style="padding:28px 12px"><div class="empty-state-text" style="margin:0">没有找到匹配的菜谱</div></div>`;
+    } else {
+      html += filtered.map(i => `
+        <button class="picker-row${App.recordsFilterRecipeId === i.id ? ' on' : ''}" data-action="pick-records-recipe" data-id="${i.id}">
+          <span class="picker-name">${esc(i.name)}</span>
+          <span class="picker-count">${i.count} 条</span>
+        </button>`).join('');
+    }
+    listEl.innerHTML = html;
+  };
+
+  // 只更新列表，不重建抽屉（避免重播弹出动画）
+  searchEl.addEventListener('input', renderList);
+  renderList();
 }
 
 // ============================================
@@ -1540,6 +1870,16 @@ async function renderRecords() {
 function barHeight(count, max, scale) {
   if (!count) return 3;
   return Math.max(8, Math.round(count / max * scale));
+}
+
+/** 趋势图跨年时，补一行年份范围说明（图表里的月份标签放不下年份） */
+function chartRangeHint(monthly) {
+  if (!monthly || !monthly.length) return '';
+  const years = new Set(monthly.map(m => m.year));
+  if (years.size <= 1) return '';
+  const first = monthly[0];
+  const last = monthly[monthly.length - 1];
+  return `<div class="form-hint" style="margin-top:8px">趋势范围：${first.year} 年 ${first.month} 月 — ${last.year} 年 ${last.month} 月</div>`;
 }
 
 function distRow(label, count, max, muted) {
@@ -1589,6 +1929,7 @@ async function showStats() {
               </div>`).join('')}</div>`
           : `<div class="text-secondary" style="font-size: 0.875rem">还没有做菜记录，做一次菜记一笔就能看到趋势。</div>`}
       </div>
+      ${chartRangeHint(s.monthly)}
       ${s.recordCount ? '<div class="form-hint" style="margin-top:8px">本月尚未结束，数字会继续增加。</div>' : ''}
 
       ${sectionTitle('最常做 Top 5')}
@@ -1652,7 +1993,7 @@ async function renderProfile() {
   const container = $('profile-content');
   let html = '';
   html += `
-    <div class="flex-between" style="margin-bottom:14px">
+    <div class="page-head">
       <span class="page-title">我的</span>
     </div>
 
@@ -1703,55 +2044,146 @@ function menuRow(iconKey, label, value, action, warn) {
 // 备份导出 / 导入（.cookbook 档案）
 // ============================================
 async function exportData() {
-  showToast('正在打包备份…');
+  showToast('正在打包备份…', { tone: 'progress' });
   try {
     const info = await exportArchive();
-    showToast(`已导出 ${info.recipes} 道菜谱（${formatFileSize(info.size)}）`);
     renderProfile();
+    showInfoSheet({
+      title: '备份已导出',
+      rows: [
+        ['菜谱', `${info.recipes} 道`],
+        ['做菜记录', `${info.records} 条`],
+        ['照片', `${info.media} 张`],
+        ['文件大小', formatFileSize(info.size)],
+        ['文件名', archiveFilename()]
+      ],
+      hint: '文件已经存到手机的「文件」或「下载」里，建议再复制一份到网盘或电脑，换手机时才拿得回来。',
+      confirmText: '知道了'
+    });
   } catch (e) {
-    showToast('导出失败：' + e.message);
+    showErrorSheet({
+      title: '备份没能导出',
+      message: e.message,
+      hint: '可以先看看手机剩余存储空间够不够，然后再试一次。',
+      retryText: '重试一次',
+      onRetry: exportData
+    });
   }
 }
 
 function importData() {
+  // 文件选择框要挂到页面上再点击：部分手机浏览器对"游离"的 input 响应不稳定
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.cookbook,.zip,.json,application/zip,application/json';
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    showToast('正在读取备份…');
-    try {
-      const parsed = await parseArchiveFile(file);
-      if (parsed.legacy) {
-        confirmSheet({
-          title: '这是旧版 JSON 备份',
-          message: `导入后会替换本机当前的全部数据。${parsed.json.exportDate ? `<br>备份时间：${formatDate(parsed.json.exportDate)}` : ''}`,
-          confirmText: '导入并替换',
-          danger: true,
-          onConfirm: async () => {
-            await autoBackupBeforeImport();
-            const res = await importLegacyJson(parsed.json);
-            showToast(`已导入 ${res.recipes} 道菜谱，正在刷新…`);
-            setTimeout(() => location.reload(), 1200);
-          }
-        });
-        return;
-      }
-      await showImportSheet(parsed);
-    } catch (err) {
-      showToast(err.message);
-    }
+  input.className = 'visually-hidden-input';
+  input.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(input);
+
+  const cleanup = () => {
+    input.value = '';
+    input.remove();
   };
+  input.addEventListener('cancel', cleanup); // 用户放弃选择
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    if (!file) {
+      cleanup();
+      return;
+    }
+    showToast('正在读取备份…', { tone: 'progress' });
+    let parsed;
+    try {
+      parsed = await parseArchiveFile(file);
+    } catch (err) {
+      cleanup();
+      showErrorSheet({
+        title: '这个文件打不开',
+        message: err.message,
+        hint: '请选择从「我的 → 导出备份」生成的 .cookbook 文件，并确认它已经完整下载到手机里。'
+      });
+      return;
+    }
+    cleanup(); // 读完就把输入框撤掉，避免手机端再次唤起选择器
+
+    if (parsed.legacy) {
+      confirmSheet({
+        title: '这是旧版 JSON 备份',
+        message: `导入后会替换本机当前的全部数据。${parsed.json.exportDate ? `<br>备份时间：${formatDate(parsed.json.exportDate)}` : ''}`,
+        confirmText: '导入并替换',
+        danger: true,
+        onConfirm: async () => {
+          let snapshotId = null;
+          try {
+            snapshotId = await createImportSnapshot().catch(() => null);
+            const res = await importLegacyJson(parsed.json);
+            await refreshAppData();
+            showImportResultSheet({
+              rows: [['导入方式', '覆盖替换'], ['菜谱', `${res.recipes} 道`]],
+              snapshotId
+            });
+          } catch (err) {
+            await discardImportSnapshot(snapshotId);
+            showToast('导入失败：' + err.message, { tone: 'error' });
+          }
+        }
+      });
+      return;
+    }
+    await showImportSheet(parsed);
+  });
   input.click();
 }
 
-async function autoBackupBeforeImport() {
+/** 导入或撤销后原地刷新数据与当前页面（不整页刷新） */
+async function refreshAppData() {
+  App.recipes = await getAllRecipes();
+  App.categories = await getCategories();
+  App.cookwares = await getCookwares();
+  App.actions = await getActions();
+  App.searchQuery = '';
+  App.cookbookQuery = '';
+  App.recordsFilterRecipeId = null;
+  App.collapsedMonths = [];
+  const tabs = ['home', 'cookbook', 'records', 'profile'];
+  switchTab(tabs.includes(App.currentTab) ? App.currentTab : 'home');
+}
+
+/** 删除 / 找回做菜记录后，刷新当前所在的记录视图 */
+async function refreshRecordsView() {
+  App.recipes = await getAllRecipes();
+  if (App.currentPage === 'page-detail' && App.viewingRecipe) showRecipeDetail(App.viewingRecipe.id);
+  else renderRecords();
+}
+
+/** 导入完成的收尾弹窗：结算信息 + 撤销入口 */
+function showImportResultSheet({ rows, snapshotId }) {
+  showInfoSheet({
+    title: '导入完成',
+    rows,
+    hint: snapshotId
+      ? '导入前的数据已在本机留存一份，如果结果不对可以撤销。'
+      : '本次没有生成撤销点（数据较多时可能空间不足），请确认导入结果是否正确。',
+    confirmText: '完成',
+    onConfirm: () => discardImportSnapshot(snapshotId),
+    secondaryText: snapshotId ? '撤销这次导入' : '',
+    onSecondary: snapshotId ? () => undoImport(snapshotId) : null
+  });
+}
+
+/** 撤销这次导入：用导入前的快照覆盖回去 */
+async function undoImport(snapshotId) {
+  if (!snapshotId) return;
   try {
-    const info = await exportArchive();
-    showToast(`已先备份当前数据（${formatFileSize(info.size)}）`);
-  } catch (e) {
-    // 自动备份失败不阻塞导入
+    await restoreImportSnapshot(snapshotId);
+    await refreshAppData();
+    showToast('已撤销这次导入', { tone: 'success' });
+  } catch (err) {
+    showErrorSheet({
+      title: '撤销没成功',
+      message: err.message,
+      hint: '当前数据是导入后的状态。如需回到导入前，可以重新选一次备份文件再导入。'
+    });
   }
 }
 
@@ -1830,21 +2262,29 @@ async function showImportSheet(parsed) {
     if (mode === 'replace' && !ack) return;
     confirmBtn.disabled = true;
     confirmBtn.textContent = '导入中…';
+    let snapshotId = null;
     try {
-      await autoBackupBeforeImport();
+      // 先在应用内留一份撤销点，不触发任何文件下载
+      snapshotId = await createImportSnapshot().catch(() => null);
+      let res;
       if (mode === 'replace') {
-        const res = await importArchiveReplace(parsed);
-        showToast(`已替换导入 ${res.recipes} 道菜谱，正在刷新…`);
+        res = await importArchiveReplace(parsed);
       } else {
-        const res = await importArchiveMerge(parsed);
-        showToast(`已新增 ${res.addedRecipes} 道菜谱（含 ${res.renamedRecipes} 道重名副本）、${res.addedRecords} 条记录，跳过重复 ${res.skippedRecipes} 道`);
+        res = await importArchiveMerge(parsed);
       }
       overlay.remove();
-      setTimeout(() => location.reload(), 1400);
+      await refreshAppData();
+      showImportResultSheet({
+        rows: mode === 'replace'
+          ? [['导入方式', '覆盖替换'], ['菜谱', `${res.recipes} 道`], ['做菜记录', `${res.records} 条`]]
+          : [['导入方式', '合并导入'], ['新增菜谱', `${res.addedRecipes} 道`], ['新增做菜记录', `${res.addedRecords} 条`], ['跳过重复菜谱', `${res.skippedRecipes} 道`], ['重名另存副本', `${res.renamedRecipes} 道`]],
+        snapshotId
+      });
     } catch (err) {
+      await discardImportSnapshot(snapshotId);
       confirmBtn.disabled = false;
       confirmBtn.textContent = '确认导入';
-      showToast('导入失败：' + err.message);
+      showToast('导入失败：' + err.message, { tone: 'error' });
     }
   });
   refresh();
@@ -1900,7 +2340,7 @@ document.addEventListener('click', e => {
       confirmDeleteRecipe(id);
       break;
     case 'restore':
-      restoreRecipe(id).then(() => { showToast('已恢复'); showTrash(); renderProfile(); });
+      restoreRecipe(id).then(() => { showToast('已恢复到菜谱列表', { tone: 'success' }); showTrash(); renderProfile(); });
       break;
     case 'purge':
       confirmPurgeRecipe(id);
@@ -1913,9 +2353,15 @@ document.addEventListener('click', e => {
         danger: true,
         onConfirm: async () => {
           const removed = await purgeAllTrash();
-          showToast(`已清空 ${removed} 个菜谱`);
           showTrash();
           renderProfile();
+          showInfoSheet({
+            title: '回收站已清空',
+            rows: [['永久删除的菜谱', `${removed} 道`]],
+            message: '这些菜谱连同它们的历史版本和做菜记录都已经删除，无法找回。',
+            hint: '如果里面有还想留着的菜谱，下次可以先从回收站恢复再清空。',
+            confirmText: '知道了'
+          });
         }
       });
       break;
@@ -1944,6 +2390,12 @@ document.addEventListener('click', e => {
     case 'close-sheet':
       closeSheet();
       break;
+    case 'open-option-picker':
+      openOptionPicker(el);
+      break;
+    case 'open-date-picker':
+      openDatePicker(el);
+      break;
     case 'save-record':
       saveRecordSheet();
       break;
@@ -1967,14 +2419,21 @@ document.addEventListener('click', e => {
     case 'del-record':
       confirmSheet({
         title: '删除这条记录？',
-        message: '删除后不可恢复。',
+        message: '删除后这条记录会从列表里消失。',
         confirmText: '删除',
         danger: true,
         onConfirm: async () => {
+          const record = await getCookRecord(id);
           await deleteCookRecord(id);
-          showToast('记录已删除');
-          if (App.currentPage === 'page-detail') showRecipeDetail(App.viewingRecipe?.id);
-          else renderRecords();
+          await refreshRecordsView();
+          showActionToast('记录已删除', {
+            actionText: '撤销',
+            onAction: async () => {
+              await restoreCookRecord(record);
+              await refreshRecordsView();
+              showToast('记录已找回', { tone: 'success' });
+            }
+          });
         }
       });
       break;
@@ -1989,6 +2448,7 @@ document.addEventListener('click', e => {
       break;
     case 'cw-toggle':
       el.classList.toggle('on');
+      refreshStepCookwareOptions();
       markDirty();
       break;
     case 'heat-toggle':
@@ -2003,16 +2463,53 @@ document.addEventListener('click', e => {
     case 'add-ingredient': {
       const list = $('#ingredients-list');
       list.insertAdjacentHTML('beforeend', ingredientRowHtml(list.children.length, null));
+      refreshStepIngredientChips();
+      refreshIngredientHint();
+      refreshStepActionOptions();
+      applyAllStepParams();
       markDirty();
       break;
     }
     case 'remove-ingredient':
-      el.closest('.ingredient-row').remove();
+      // 删掉的食材，要从各步骤的已选里一起清掉
+      {
+        const row = el.closest('.ingredient-row');
+        const name = (row.querySelector('.ing-name')?.value || row.querySelector('.ing-name')?.dataset.prev || '').trim();
+        row.remove();
+        if (name) {
+          document.querySelectorAll('#steps-list .step-ingredients').forEach(wrap => {
+            try {
+              const list = JSON.parse(wrap.dataset.selected || '[]').filter(n => n !== name);
+              wrap.dataset.selected = JSON.stringify(list);
+            } catch (e) {
+              // 数据异常就跳过
+            }
+          });
+        }
+      }
+      refreshStepIngredientChips();
+      refreshIngredientHint();
+      refreshStepActionOptions();
+      applyAllStepParams();
+      markDirty();
+      break;
+    case 'step-ingredient':
+      el.classList.toggle('on');
+      {
+        const wrap = el.closest('.step-ingredients');
+        if (wrap) {
+          wrap.dataset.selected = JSON.stringify([...wrap.querySelectorAll('.chip.on')].map(c => c.dataset.name));
+        }
+      }
+      refreshIngredientHint();
       markDirty();
       break;
     case 'add-step': {
       const list = $('#steps-list');
       list.insertAdjacentHTML('beforeend', stepEditorHtml(list.children.length, null));
+      refreshStepIngredientChips();
+      refreshStepActionOptions();
+      refreshStepCookwareOptions();
       markDirty();
       break;
     }
@@ -2091,6 +2588,16 @@ document.addEventListener('click', e => {
       renderRecords();
       break;
     }
+    case 'open-records-picker':
+      showRecordsRecipePicker();
+      break;
+    case 'pick-records-recipe': {
+      const value = el.dataset.id;
+      App.recordsFilterRecipeId = value ? +value : null;
+      closeSheet();
+      renderRecords();
+      break;
+    }
     case 'sort-recipes':
       App.sortMode = el.dataset.sort;
       renderCookbook();
@@ -2104,10 +2611,10 @@ document.addEventListener('click', e => {
       addSampleRecipe()
         .then(() => {
           closeSheet();
-          showToast('示例菜谱已添加');
+          showToast('示例菜谱已添加', { tone: 'success' });
           renderHome();
         })
-        .catch(() => showToast('添加失败，请稍后再试'));
+        .catch(() => showToast('添加失败，请稍后再试', { tone: 'error' }));
       break;
     case 'manager-rename': {
       const row = el.closest('.flex-between');
@@ -2115,7 +2622,7 @@ document.addEventListener('click', e => {
       const targetId = +el.dataset.id;
       const current = row.querySelector('span').textContent.trim();
       row.innerHTML = `
-        <input class="input" style="flex:1;height:44px" value="${esc(current)}" aria-label="新名称">
+        <input class="input" style="flex:1;height:44px" value="${escAttr(current)}" aria-label="新名称">
         <button class="btn btn-primary btn-sm" data-action="manager-rename-save" data-type="${type}" data-id="${targetId}">保存</button>
         <button class="btn btn-secondary btn-sm" data-action="manager-rename-cancel" data-type="${type}">取消</button>`;
       row.querySelector('input').focus();
@@ -2127,6 +2634,21 @@ document.addEventListener('click', e => {
       else if (el.dataset.type === 'cookware') showCookwareManager();
       else showActionManager();
       break;
+    case 'manager-param': {
+      const type = el.dataset.type;
+      const param = el.dataset.param;
+      const targetId = +el.dataset.id;
+      const fn = type === 'cookware' ? toggleCookwareParam : toggleActionParam;
+      fn(targetId, param)
+        .then(async () => {
+          // 规则变了，App 里的缓存也要跟着更新，编辑页下次打开才一致
+          App.cookwares = await getCookwares();
+          App.actions = await getActions();
+          el.classList.toggle('on');
+        })
+        .catch(err => showToast(err.message, { tone: 'error' }));
+      break;
+    }
     case 'manager-rename-save': {
       const row = el.closest('.flex-between');
       const newName = row.querySelector('input')?.value?.trim();
@@ -2135,13 +2657,13 @@ document.addEventListener('click', e => {
       const fn = type === 'category' ? renameCategory : type === 'cookware' ? renameCookware : renameAction;
       fn(targetId, newName)
         .then(() => {
-          showToast('已改名');
+          showToast('已改名', { tone: 'success' });
           closeSheet();
           if (type === 'category') showCategoryManager();
           else if (type === 'cookware') showCookwareManager();
           else showActionManager();
         })
-        .catch(err => showToast(err.message));
+        .catch(err => handleManagerError(err, row.querySelector('input')));
       break;
     }
     case 'open-category-manager':
@@ -2159,14 +2681,14 @@ document.addEventListener('click', e => {
       const fn = type === 'category' ? deleteCategory : type === 'cookware' ? deleteCookware : deleteAction;
       fn(targetId)
         .then(() => {
-          showToast('已删除');
+          showToast('已删除', { tone: 'success' });
           closeSheet();
           renderProfile();
           if (type === 'category') showCategoryManager();
           else if (type === 'cookware') showCookwareManager();
           else showActionManager();
         })
-        .catch(err => showToast(err.message));
+        .catch(err => handleManagerError(err));
       break;
     }
     case 'export-data':
@@ -2180,14 +2702,14 @@ document.addEventListener('click', e => {
       const cur = localStorage.getItem('my-recipes-font-size') || '标准';
       const next = levels[(levels.indexOf(cur) + 1) % levels.length];
       applyFontSize(next);
-      showToast(`字号已调整为「${next}」`);
+      showToast(`字号已调整为「${next}」`, { tone: 'success' });
       renderProfile();
       break;
     }
     case 'backup-remind': {
       const cur = localStorage.getItem('my-recipes-backup-remind') === 'off';
       localStorage.setItem('my-recipes-backup-remind', cur ? 'on' : 'off');
-      showToast(cur ? '备份提醒已开启' : '备份提醒已关闭');
+      showToast(cur ? '备份提醒已开启' : '备份提醒已关闭', { tone: 'success' });
       renderProfile();
       break;
     }
@@ -2202,25 +2724,28 @@ document.addEventListener('change', async e => {
   const room = 3 - App.editImages.length;
   if (room <= 0) {
     input.value = '';
-    showToast('最多只能放 3 张照片');
+    showToast('最多只能放 3 张照片', { tone: 'error' });
     return;
   }
   const files = Array.from(input.files).slice(0, room);
-  showToast('正在处理照片…');
+  showToast('正在处理照片…', { tone: 'progress' });
 
   let added = 0;
   let failed = 0;
-  let unsupported = false;
+  let unsupportedCount = 0;
+  const unsupportedNames = [];
   for (const file of files) {
     try {
       if (isUnsupportedImage(file)) {
-        unsupported = true;
+        unsupportedCount += 1;
+        if (file && file.name) unsupportedNames.push(file.name);
         continue;
       }
       App.editImages.push(await makeImageAsset(file));
       added += 1;
     } catch (err) {
       failed += 1;
+      if (file && file.name) unsupportedNames.push(file.name);
       console.warn('照片处理失败：', file && file.name, err);
     }
   }
@@ -2231,10 +2756,25 @@ document.addEventListener('change', async e => {
     renderPhotoTiles();
     markDirty();
   }
-  if (unsupported || failed) {
-    showToast(added ? '部分照片格式不支持（iPhone 的 HEIC 需先转成 JPG）' : '这张照片格式不支持，iPhone 的 HEIC 照片请先在相册里转成 JPG');
+  const notAdded = unsupportedCount + failed;
+  if (notAdded) {
+    const nameList = unsupportedNames.length
+      ? `涉及：${esc(unsupportedNames.slice(0, 3).join('、'))}${unsupportedNames.length > 3 ? ' 等' : ''}。`
+      : '';
+    showInfoSheet({
+      title: added ? '有照片没能加进来' : '照片没能加进来',
+      rows: [
+        ['已添加', `${added} 张`],
+        ['没成功', `${notAdded} 张`]
+      ],
+      message: added
+        ? '没成功的照片格式不支持或读取失败。'
+        : '这些照片格式不支持，或者读取时出错了。',
+      hint: `${nameList}iPhone 拍的 HEIC 照片要先在相册里转成 JPG（或用截图）再上传。`,
+      confirmText: '知道了'
+    });
   } else if (added) {
-    showToast(`已添加 ${added} 张照片`);
+    showToast(`已添加 ${added} 张照片`, { tone: 'success' });
   }
 });
 
