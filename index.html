@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#C94A2E">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="我家菜谱">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <title>我家菜谱</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* 内联启动样式，防止闪白 */
+    html, body { background: #FFFFFF; }
+  </style>
+</head>
+<body>
+
+  <!-- ============================================
+       顶部导航栏
+       ============================================ -->
+  <header class="app-header">
+    <div class="app-header-title">我家菜谱</div>
+    <div class="app-header-actions">
+      <button class="btn btn-ghost btn-sm" onclick="showNewRecipe()">+ 新建</button>
+    </div>
+  </header>
+
+  <!-- ============================================
+       页面容器
+       ============================================ -->
+
+  <!-- 首页 -->
+  <div class="page active" id="page-home">
+    <div class="page-content" id="home-content">
+      <div class="text-center" style="padding:40px 0">
+        <div class="text-secondary">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 菜谱页 -->
+  <div class="page" id="page-cookbook">
+    <div class="page-content" id="cookbook-content"></div>
+  </div>
+
+  <!-- 做菜记录页 -->
+  <div class="page" id="page-records">
+    <div class="page-content" id="records-content"></div>
+  </div>
+
+  <!-- 我的 -->
+  <div class="page" id="page-profile">
+    <div class="page-content" id="profile-content"></div>
+  </div>
+
+  <!-- 菜谱详情（独立页面，不显示底部导航） -->
+  <div class="page" id="page-detail"></div>
+
+  <!-- 新建/编辑菜谱（独立页面） -->
+  <div class="page" id="page-edit"></div>
+
+  <!-- 回收站（独立页面） -->
+  <div class="page" id="page-trash"></div>
+
+  <!-- 菜谱统计（独立页面） -->
+  <div class="page" id="page-stats"></div>
+
+  <!-- ============================================
+       底部导航栏
+       ============================================ -->
+  <nav class="bottom-tabs">
+    <button class="tab-item active" data-tab="home">
+      <span class="tab-pill">
+        <span class="tab-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+        </span>
+        <span class="tab-item-label">首页</span>
+      </span>
+    </button>
+    <button class="tab-item" data-tab="cookbook">
+      <span class="tab-pill">
+        <span class="tab-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+        </span>
+        <span class="tab-item-label">菜谱</span>
+      </span>
+    </button>
+    <button class="tab-item" data-tab="records">
+      <span class="tab-pill">
+        <span class="tab-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12l2 2 4-4"/></svg>
+        </span>
+        <span class="tab-item-label">记录</span>
+      </span>
+    </button>
+    <button class="tab-item" data-tab="profile">
+      <span class="tab-pill">
+        <span class="tab-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+        </span>
+        <span class="tab-item-label">我的</span>
+      </span>
+    </button>
+  </nav>
+
+  <!-- ============================================
+       依赖（全部本地化，离线可用）
+       ============================================ -->
+  <script src="vendor/dexie.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+
+  <!-- ============================================
+       应用脚本
+       ============================================ -->
+  <script src="db.js?v=6"></script>
+  <script src="images.js?v=6"></script>
+  <script src="archive.js?v=6"></script>
+  <script src="ui.js?v=6"></script>
+  <script src="manage.js?v=6"></script>
+  <script src="app.js?v=6"></script>
+
+</body>
+</html>
