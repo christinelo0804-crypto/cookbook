@@ -1014,7 +1014,7 @@ input[type="date"] {
 .grid-card {
   background: var(--color-surface);
   border: 1px solid var(--color-line);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   padding: 0;
   overflow: hidden;
   cursor: pointer;
@@ -1585,11 +1585,18 @@ input[type="date"] {
 
 .ing-row {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
   padding: 11px 0;
   font-size: 1rem;
   color: var(--color-text);
   border-bottom: 1px dashed var(--color-line);
+}
+
+/* 左侧标签不参与压缩，长内容（如备份文件名）在右侧换行并右对齐 */
+.ing-row > span:first-child {
+  flex-shrink: 0;
 }
 
 .ing-row:last-child {
@@ -1600,6 +1607,9 @@ input[type="date"] {
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 /* 首次使用引导里的三步：标题和说明各占一行，避免两列挤在一起折行 */
@@ -1650,18 +1660,18 @@ input[type="date"] {
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 12px;
+  gap: 6px;
+  padding: 8px 15px;
   border-radius: var(--radius-full);
-  font-size: 0.7812rem;
+  font-size: var(--text-sm);
   font-weight: 700;
   background: var(--color-accent-soft);
   color: var(--color-accent-deep);
 }
 
 .tag svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
 }
 
 .step-item {
@@ -1729,7 +1739,9 @@ input[type="date"] {
   color: var(--color-text-secondary);
 }
 
-.step-note {
+/* 只作用于详情页里的备注文字；编辑页的备注框要保持输入框的默认字号
+   （小于 16px 时 iOS 会在聚焦时自动放大整页） */
+.step-detail .step-note {
   font-size: 0.875rem;
   color: var(--color-text-secondary);
   line-height: 1.55;
@@ -1798,8 +1810,9 @@ input[type="date"] {
   font-size: 0.9062rem;
   color: var(--color-text);
   cursor: pointer;
-  background: none;
-  border: none;
+  /* 它本身也是 <button class="card">，不要再把 .card 的描边和底色清掉，
+     否则只剩阴影，看起来比别的卡片淡 */
+  text-align: left;
 }
 
 .version-row-action {
@@ -2146,7 +2159,8 @@ input[type="date"] {
 
 .ingredient-row .input {
   height: 46px;
-  font-size: 0.9375rem;
+  /* 必须 >= 16px：iOS 上小于 16px 的输入框一聚焦就会把整页放大 */
+  font-size: var(--text-base);
 }
 
 .ingredient-row .ingredient-amount {
@@ -2272,6 +2286,8 @@ input[type="date"] {
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
+  /* 同样保持 16px，避免任何情况下触发 iOS 的自动放大 */
+  font-size: var(--text-base);
 }
 
 /* 添加照片的卡片：图标 + 文字，目标更明显 */
@@ -2631,10 +2647,17 @@ input[type="date"] {
   font-size: var(--text-sm);
   font-weight: 600;
   z-index: 300;
-  animation: toastIn var(--duration-normal) var(--ease-out);
+  /* 透明度用更平缓的缓动，避免一开始就跳到位显得生硬 */
+  animation: toastIn 0.34s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: opacity, transform;
   pointer-events: none;
   box-shadow: 0 4px 20px var(--shadow-toast);
   max-width: 86vw;
+}
+
+/* 消失时淡出，避免"啪"地一下不见 */
+.toast-out {
+  animation: toastOut 0.28s cubic-bezier(0.4, 0, 0.6, 1) forwards;
 }
 
 /* 成功：加一个对勾，不靠颜色也能区分 */
@@ -2746,11 +2769,22 @@ input[type="date"] {
 @keyframes toastIn {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(-8px);
+    transform: translateX(-50%) translateY(-6px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes toastOut {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px) scale(0.99);
   }
 }
 

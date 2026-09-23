@@ -75,6 +75,20 @@ const TOAST_TONE_CLASS = {
   progress: 'toast-progress'
 };
 
+/** 淡出后移除；不支持动画时兜底直接移除 */
+function dismissToast(el) {
+  if (!el || !el.isConnected) return;
+  el.classList.add('toast-out');
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    el.remove();
+  };
+  el.addEventListener('animationend', remove, { once: true });
+  setTimeout(remove, 320);
+}
+
 /**
  * 轻提示。tone 用来区分四种情况：
  *   success  操作成功（带对勾）
@@ -94,24 +108,27 @@ function showToast(msg, { tone = 'info', actionText = '', onAction = null, durat
   announceToScreenReader(msg);
 
   let timer = null;
-  if (tone !== 'progress') {
+  if (tone === 'progress') {
+    // 正常会被随后的结果提示或弹窗收掉；这里放个兜底，避免流程异常时一直挂着
+    timer = setTimeout(() => dismissToast(el), 12000);
+  } else {
     const base = tone === 'error' ? 4200 : 2200;
     const ms = duration != null ? duration : Math.min(base + Math.max(0, msg.length - 12) * 90, 6000);
-    timer = setTimeout(() => el.remove(), ms);
+    timer = setTimeout(() => dismissToast(el), ms);
   }
 
   const btn = el.querySelector('.toast-btn');
   if (btn) {
     btn.addEventListener('click', () => {
       if (timer) clearTimeout(timer);
-      el.remove();
+      dismissToast(el);
       if (onAction) onAction();
     });
   }
   return {
     close: () => {
       if (timer) clearTimeout(timer);
-      el.remove();
+      dismissToast(el);
     }
   };
 }
@@ -137,6 +154,8 @@ function showInfoSheet({
   danger = false,
   dangerText = false
 }) {
+  // 弹窗出现时收掉"进行中"提示，避免两条信息同时挂在屏幕上
+  dismissToast(document.querySelector('.toast-progress'));
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay active center';
   overlay.innerHTML = `

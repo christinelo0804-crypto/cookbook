@@ -171,13 +171,9 @@ async function init() {
     // 清理失败不影响使用
   }
 
-  // 老数据迁移：把 base64 图片转成二进制存储（一次性，幂等）
-  try {
-    const converted = await migrateLegacyImages();
-    if (converted > 0) showToast(`已优化 ${converted} 道菜谱的图片存储`);
-  } catch (e) {
-    // 迁移失败不阻塞使用，下次启动会重试
-  }
+  // 老数据迁移（base64 图片 → 二进制存储）：要读全库，放到首屏渲染之后再跑，
+  // 并且只做一次，避免每次启动都扫一遍所有菜谱（照片多时这一步很贵）
+  const needsImageMigration = !localStorage.getItem('my-recipes-images-v2');
 
   // 旧版默认分类 → 新版默认分类（只做一次，用户自定义过则跳过）
   if (!localStorage.getItem('my-recipes-cat-v2')) {
@@ -210,27 +206,43 @@ async function init() {
 
   renderHome();
 
+  // 首屏出来之后再补做"图片存储格式"的一次性迁移，不拖慢启动
+  if (needsImageMigration) {
+    const runImageMigration = async () => {
+      try {
+        const converted = await migrateLegacyImages();
+        localStorage.setItem('my-recipes-images-v2', '1');
+        if (converted > 0) showToast(`已优化 ${converted} 道菜谱的图片存储`, { tone: 'success' });
+      } catch (e) {
+        // 失败则下次启动重试
+      }
+    };
+    if ('requestIdleCallback' in window) requestIdleCallback(runImageMigration, { timeout: 3000 });
+    else setTimeout(runImageMigration, 1200);
+  }
+
   document.querySelectorAll('.tab-item').forEach(el => {
     if (!el.dataset.tab) return;
     el.addEventListener('click', () => switchTab(el.dataset.tab));
   });
 
   if ('serviceWorker' in navigator) {
+    // 页面加载前如果已经有 controller，说明这次是"已有应用再更新"，才提示更新
+    const hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js')
-      .then(reg => {
-        // Service Worker 更新完成后自动刷新一次，确保立刻看到最新版本
-        reg.addEventListener('updatefound', () => {
-          const worker = reg.installing;
-          if (!worker) return;
-          worker.addEventListener('statechange', () => {
-            if (worker.state === 'activated' && navigator.serviceWorker.controller && !sessionStorage.getItem('mrs-sw-updated')) {
-              sessionStorage.setItem('mrs-sw-updated', '1');
-              location.reload();
-            }
-          });
-        });
-      })
       .catch(() => {});
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading || !hadController) return; // 首次安装不提示
+      showActionToast('新版本已就绪', {
+        actionText: '更新',
+        duration: 15000,
+        onAction: () => {
+          reloading = true;
+          location.reload();
+        }
+      });
+    });
   }
 
   // 编辑页输入即标记为"有未保存修改"
@@ -958,8 +970,9 @@ async function showRecipeMenu(recipeId) {
 
 async function copyRecipe(recipeId) {
   try {
-    showToast('正在复制…', { tone: 'progress' });
+    const pending = showToast('正在复制…', { tone: 'progress' });
     const newId = await duplicateRecipe(recipeId);
+    pending.close();
     showToast('已复制，改好名字后保存', { tone: 'success' });
     await showEditRecipe(newId);
   } catch (e) {
@@ -2044,9 +2057,10 @@ function menuRow(iconKey, label, value, action, warn) {
 // 备份导出 / 导入（.cookbook 档案）
 // ============================================
 async function exportData() {
-  showToast('正在打包备份…', { tone: 'progress' });
+  const pending = showToast('正在打包备份…', { tone: 'progress' });
   try {
     const info = await exportArchive();
+    pending.close();
     renderProfile();
     showInfoSheet({
       title: '备份已导出',
@@ -2061,6 +2075,7 @@ async function exportData() {
       confirmText: '知道了'
     });
   } catch (e) {
+    pending.close();
     showErrorSheet({
       title: '备份没能导出',
       message: e.message,
@@ -2091,11 +2106,12 @@ function importData() {
       cleanup();
       return;
     }
-    showToast('正在读取备份…', { tone: 'progress' });
+    const pending = showToast('正在读取备份…', { tone: 'progress' });
     let parsed;
     try {
       parsed = await parseArchiveFile(file);
     } catch (err) {
+      pending.close();
       cleanup();
       showErrorSheet({
         title: '这个文件打不开',
@@ -2104,6 +2120,7 @@ function importData() {
       });
       return;
     }
+    pending.close(); // 后面要弹的是「导入确认」弹窗，这条进行中提示必须收掉
     cleanup(); // 读完就把输入框撤掉，避免手机端再次唤起选择器
 
     if (parsed.legacy) {
@@ -2728,7 +2745,7 @@ document.addEventListener('change', async e => {
     return;
   }
   const files = Array.from(input.files).slice(0, room);
-  showToast('正在处理照片…', { tone: 'progress' });
+  const pending = showToast('正在处理照片…', { tone: 'progress' });
 
   let added = 0;
   let failed = 0;
@@ -2758,6 +2775,7 @@ document.addEventListener('change', async e => {
   }
   const notAdded = unsupportedCount + failed;
   if (notAdded) {
+    pending.close();
     const nameList = unsupportedNames.length
       ? `涉及：${esc(unsupportedNames.slice(0, 3).join('、'))}${unsupportedNames.length > 3 ? ' 等' : ''}。`
       : '';
@@ -2775,6 +2793,8 @@ document.addEventListener('change', async e => {
     });
   } else if (added) {
     showToast(`已添加 ${added} 张照片`, { tone: 'success' });
+  } else {
+    pending.close();
   }
 });
 

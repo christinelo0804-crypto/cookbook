@@ -50,6 +50,25 @@ function applyArchiveSettings(settings) {
 // ============================================
 // 导出
 // ============================================
+
+/**
+ * JSZip 只在导入/导出备份时才需要（约 95KB），
+ * 启动时不必加载，这里按需拉取一次并复用。
+ */
+let jsZipPromise = null;
+function ensureJSZip() {
+  if (typeof JSZip !== 'undefined') return Promise.resolve(JSZip);
+  if (!jsZipPromise) {
+    jsZipPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'vendor/jszip.min.js';
+      script.onload = () => (typeof JSZip !== 'undefined' ? resolve(JSZip) : reject(new Error('JSZip 加载失败')));
+      script.onerror = () => reject(new Error('备份组件加载失败，请检查网络后重试'));
+      document.head.appendChild(script);
+    });
+  }
+  return jsZipPromise;
+}
 async function collectImageRef(img, recipeId, index, media) {
   if (!img) return null;
   if (typeof img === 'string') {
@@ -122,7 +141,8 @@ async function gatherArchiveData() {
 }
 
 async function buildArchiveBlob(result) {
-  const zip = new JSZip();
+  const Zip = await ensureJSZip();
+  const zip = new Zip();
   const manifest = {
     formatVersion: ARCHIVE_FORMAT_VERSION,
     app: ARCHIVE_APP,
@@ -190,7 +210,8 @@ async function parseArchiveFile(file) {
     // 先转 ArrayBuffer 再解压，兼容 iOS 上 Service Worker 控制时直接读磁盘文件的已知问题
     const buffer = await file.arrayBuffer();
     if (buffer.byteLength === 0) throw new Error('empty');
-    zip = await JSZip.loadAsync(buffer);
+    const Zip = await ensureJSZip();
+    zip = await Zip.loadAsync(buffer);
   } catch (e) {
     // 兼容旧版 JSON 备份
     const legacy = await tryParseLegacyJson(file);
